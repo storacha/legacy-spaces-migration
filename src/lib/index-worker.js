@@ -72,8 +72,11 @@ export async function buildIndex(blobKey, size) {
  */
 export async function generateShardedIndex(rootCID, shards) {
   const root = CID.parse(rootCID)
+  console.log(`Generating sharded index for ${rootCID} with ${shards.length} shards...`)
   const index = ShardedDAGIndex.create(root)
-  for (const shard of shards) {
+  
+  // Build indices for all shards in parallel since it's remote work
+  const shardIndexPromises = shards.map(async (shard) => {
     const shardCID = CID.parse(shard.cid)
     
     // Convert CID to blob key format: <multihash>/<multihash>.blob
@@ -83,7 +86,13 @@ export async function generateShardedIndex(rootCID, shards) {
     // Generate index for the shard using the worker
     const slices = await buildIndex(blobKey, shard.size)
     
-    // Add all slices to the index
+    return { shardCID, slices }
+  })
+  
+  const shardIndices = await Promise.all(shardIndexPromises)
+  
+  // Add all slices to the index
+  for (const { shardCID, slices } of shardIndices) {
     for (const [digestBytes, position] of slices.entries()) {
       const sliceDigest = Digest.decode(digestBytes)
       index.setSlice(shardCID.multihash, sliceDigest, position)
@@ -94,6 +103,7 @@ export async function generateShardedIndex(rootCID, shards) {
   if (archiveResult.error) {
     throw new Error('Failed to archive index', { cause: archiveResult.error })
   }
-  
+
+  console.log(`Sharded index for ${rootCID} generated with success`)
   return archiveResult.ok
 }
