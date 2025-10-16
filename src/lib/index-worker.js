@@ -92,12 +92,35 @@ export async function generateShardedIndex(rootCID, shards) {
   const shardIndices = await Promise.all(shardIndexPromises)
   
   // Add all slices to the index
+  console.log()
+  console.log('Building Sharded DAG Index')
+  console.log('='.repeat(50))
+  
   for (const { shardCID, slices } of shardIndices) {
+    const shardSize = shards.find(s => s.cid === shardCID.toString())?.size
+    const shardMultihash = base58btc.encode(shardCID.multihash.bytes)
+    
+    console.log()
+    console.log(`Shard: ${shardMultihash}`)
+    console.log(`  Slices (${slices.size + 1}):`)
+    
+    // Add the shard itself as a slice FIRST (full CAR file)
+    if (shardSize) {
+      console.log(`    ${shardMultihash} @ 0-${shardSize}`)
+      index.setSlice(shardCID.multihash, shardCID.multihash, { offset: 0, length: shardSize })
+    }
+    
+    // Then add content slices
     for (const [digestBytes, position] of slices.entries()) {
       const sliceDigest = Digest.decode(digestBytes)
-      index.setSlice(shardCID.multihash, sliceDigest, position)
+      const sliceMultihash = base58btc.encode(sliceDigest.bytes)
+      const [offset, length] = position
+      console.log(`    ${sliceMultihash} @ ${offset}-${offset + length}`)
+      index.setSlice(shardCID.multihash, sliceDigest, { offset, length })
     }
   }
+  
+  console.log()
   
   const archiveResult = await index.archive()
   if (archiveResult.error) {
@@ -105,5 +128,10 @@ export async function generateShardedIndex(rootCID, shards) {
   }
 
   console.log(`Sharded index for ${rootCID} generated with success`)
-  return archiveResult.ok
+  
+  // Return both the index bytes and the shard indices for display
+  return {
+    indexBytes: archiveResult.ok,
+    shardIndices,
+  }
 }

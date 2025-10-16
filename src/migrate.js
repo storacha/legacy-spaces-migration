@@ -28,16 +28,18 @@ import { getShardSize } from './lib/blob-registry-table.js'
 import { generateShardedIndex } from './lib/index-worker.js'
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
+import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
+import * as Digest from 'multiformats/hashes/digest'
 
 /**
  * Test index generation for a single upload
  */
 async function testIndexGeneration(upload) {
-  console.log(`\n${'='.repeat(80)}`)
-  console.log(`Testing Index Generation`)
-  console.log(`${'='.repeat(80)}`)
-  console.log(`Root CID: ${upload.root}`)
+  console.log()
+  console.log('Testing Index Generation')
+  console.log('='.repeat(50))
+  console.log(`Root CID (Upload): ${upload.root}`)
   console.log(`Space: ${upload.space}`)
   console.log(`Shards: ${upload.shards.length}`)
   console.log()
@@ -53,18 +55,47 @@ async function testIndexGeneration(upload) {
     }
     console.log()
     
-    // Generate the sharded DAG index
-    const indexBytes = await generateShardedIndex(upload.root, shards)
+    // Generate the sharded DAG index for the root CID (upload)
+    const { indexBytes, shardIndices } = await generateShardedIndex(upload.root, shards)
     
     // Calculate index CID
     const indexDigest = await sha256.digest(indexBytes)
     const indexCID = Link.create(0x0202, indexDigest) // CAR codec
     
     console.log()
-    console.log('Index Generation Results:')
-    console.log(`  Index CID: ${indexCID}`)
-    console.log(`  Index Size: ${indexBytes.length} bytes`)
-    console.log(`  Index Multihash (base58btc): ${base58btc.encode(indexDigest.bytes)}`)
+    console.log('Generated Sharded DAG Index')
+    console.log('='.repeat(50))
+    console.log()
+    console.log(`Indexes (1):`)
+    console.log(`  ${indexCID}`)
+    console.log(`    Content:`)
+    console.log(`      ${upload.root}`)
+    console.log(`    Shards (${shards.length}):`)
+    
+    for (const { shardCID, slices } of shardIndices) {
+      const shardSize = shards.find(s => s.cid === shardCID.toString())?.size
+      const shardMultihash = base58btc.encode(shardCID.multihash.bytes)
+      
+      console.log(`      ${shardMultihash}`)
+      console.log(`        Slices (${slices.size + 1}):`)
+      
+      // Show shard slice first
+      console.log(`          ${shardMultihash} @ 0-${shardSize}`)
+      
+      // Then show content slices
+      for (const [digestBytes, position] of slices.entries()) {
+        const sliceDigest = Digest.decode(digestBytes)
+        const sliceMultihash = base58btc.encode(sliceDigest.bytes)
+        const [offset, length] = position
+        console.log(`          ${sliceMultihash} @ ${offset}-${offset + length}`)
+      }
+    }
+    
+    console.log()
+    console.log('Metadata')
+    console.log(`  CID: ${indexCID}`)
+    console.log(`  Size: ${indexBytes.length} bytes`)
+    console.log(`  Multihash: ${base58btc.encode(indexDigest.bytes)}`)
     console.log()
     
     return {
@@ -93,7 +124,7 @@ async function testIndexGeneration(upload) {
  */
 async function runTestIndexMode(values) {
   console.log('Legacy Content Migration - Step 1: Index Generation Test')
-  console.log('==========================================================')
+  console.log('='.repeat(50))
   console.log()
   
   let upload = null
@@ -139,21 +170,17 @@ async function runTestIndexMode(values) {
   const result = await testIndexGeneration(upload)
   
   // Print summary
-  console.log('='.repeat(80))
+  console.log()
+  console.log('='.repeat(50))
   if (result.success) {
     console.log('SUCCESS: Index generated successfully!')
-    console.log(`  Upload: ${result.upload}`)
-    console.log(`  Space: ${result.space}`)
-    console.log(`  Index CID: ${result.indexCID}`)
-    console.log(`  Index Size: ${result.indexSize} bytes`)
   } else {
     console.log('FAILED: Index generation failed')
     console.log(`  Upload: ${result.upload}`)
     console.log(`  Error: ${result.error}`)
-    process.exit(1)
   }
+  console.log('='.repeat(50))
 }
-
 
 /**
  * Main function
