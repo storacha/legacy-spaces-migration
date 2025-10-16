@@ -19,7 +19,7 @@ const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.worker
  * @param {number} size - The size of the blob in bytes
  * @returns {Promise<Map<Uint8Array, [number, number]>>} - Map of digest bytes to [offset, length]
  */
-export async function buildIndex(blobKey, size) {
+async function buildIndex(blobKey, size) {
   const slices = new Map()
   
   let blocks = 0
