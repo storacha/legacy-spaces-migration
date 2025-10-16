@@ -1,0 +1,32 @@
+{
+  "name": "legacy-spaces-migration",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Migration tooling for legacy spaces to modern indexing system",
+  "scripts": {
+    "analyze": "node src/analyze.js",
+    "migrate": "node src/migrate.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.911.0",
+    "@aws-sdk/util-dynamodb": "^3.911.0",
+    "@ipld/dag-json": "^10.2.5",
+    "@storacha/blob-index": "^1.2.1",
+    "@storacha/capabilities": "^1.9.0",
+    "@storacha/indexing-service-client": "^2.5.0",
+    "@storacha/upload-client": "^1.3.3",
+    "@ucanto/client": "^9.0.1",
+    "@ucanto/core": "^10.4.0",
+    "@ucanto/principal": "^9.0.2",
+    "@ucanto/transport": "^9.2.0",
+    "@web3-storage/content-claims": "^5.2.1",
+    "dotenv": "^17.2.3",
+    "multiformats": "^13.4.1",
+    "ndjson-web": "^1.1.0",
+    "p-queue": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748"
+}
