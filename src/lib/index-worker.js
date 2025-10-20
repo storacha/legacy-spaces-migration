@@ -15,15 +15,51 @@ const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.worker
 /**
  * Generates the index for a blob using the Index Worker
  * 
- * @param {string} blobKey - The key of the blob to index (e.g. "<multihash>/<multihash>.blob")
+ * @param {import('multiformats').CID} shardCID - The CID of the shard
  * @param {number} size - The size of the blob in bytes
  * @returns {Promise<Map<Uint8Array, [number, number]>>} - Map of digest bytes to [offset, length]
  */
-async function buildIndex(blobKey, size) {
+async function buildIndex(shardCID, size) {
   const slices = new Map()
   
   let blocks = 0
   let offset = 0
+  
+  // Try multiple formats:
+  // 1. CID string (e.g., bagbaiera... for CIDv1)
+  // 2. Base58btc encoded multihash (e.g., zQm... for legacy CIDv0-style)
+  const cidString = shardCID.toString()
+  const multihashB58 = base58btc.encode(shardCID.multihash.bytes)
+  const identifiers = [cidString, multihashB58]
+  
+  // Try both .car (legacy) and .blob (new) extensions
+  const extensions = ['.car', '.blob']
+  
+  let blobKey = null
+  let lastError = null
+  
+  // Find which format exists by trying the first offset
+  for (const id of identifiers) {
+    for (const ext of extensions) {
+      const testKey = `${id}/${id}${ext}`
+      try {
+        const url = `${WORKER_URL}/index/${testKey}?offset=0`
+        const res = await fetch(url, { method: 'HEAD' })
+        if (res.ok) {
+          blobKey = testKey
+          console.log(`Found blob at ${testKey}`)
+          break
+        }
+      } catch (err) {
+        lastError = err
+      }
+    }
+    if (blobKey) break
+  }
+  
+  if (!blobKey) {
+    throw new Error(`Blob not found in carpark (tried CID and multihash formats with .car and .blob): ${cidString}`, { cause: lastError })
+  }
   
   while (offset < size) {
     const prevBlocks = blocks
@@ -81,12 +117,8 @@ export async function generateShardedIndex(rootCID, shards) {
   const shardIndexPromises = shards.map(async (shard) => {
     const shardCID = CID.parse(shard.cid)
     
-    // Convert CID to blob key format: <multihash>/<multihash>.blob
-    const shardMultihash = base58btc.encode(shardCID.multihash.bytes)
-    const blobKey = `${shardMultihash}/${shardMultihash}.blob`
-    
-    // Generate index for the shard using the worker
-    const slices = await buildIndex(blobKey, shard.size)
+    // Generate index for the shard using the worker (tries different formats)
+    const slices = await buildIndex(shardCID, shard.size)
     
     return { shardCID, slices }
   })
