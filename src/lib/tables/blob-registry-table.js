@@ -22,7 +22,12 @@ export function createDynamoClient() {
 
 /**
  * Query blob registry to get shard size
- * Falls back to store table and allocations table if not found
+ * Falls back to allocations table then store table if not found
+ * 
+ * Query order:
+ * 1. blob-registry (newest, intended replacement)
+ * 2. allocations (current, still being written to)
+ * 3. store (legacy)
  * 
  * @param {string} space - Space DID
  * @param {string} shardCID - Shard CID (CAR CID)
@@ -49,34 +54,13 @@ export async function getShardSize(space, shardCID) {
   })
   
   const blobRegistryResponse = await client.send(blobRegistryCommand)
-  
   if (blobRegistryResponse.Items && blobRegistryResponse.Items.length > 0) {
     const blob = unmarshall(blobRegistryResponse.Items[0])
     return blob.size
   }
   
-  // Fall back to store table (legacy table)
-  // In the store table, the key is "link" (the CID string) instead of "digest"
-  const storeCommand = new QueryCommand({
-    TableName: config.tables.store,
-    KeyConditionExpression: '#space = :space AND link = :link',
-    ExpressionAttributeNames: {
-      '#space': 'space',
-    },
-    ExpressionAttributeValues: {
-      ':space': { S: space },
-      ':link': { S: shardCID },
-    },
-  })
-  
-  const storeResponse = await client.send(storeCommand)
-  
-  if (storeResponse.Items && storeResponse.Items.length > 0) {
-    const blob = unmarshall(storeResponse.Items[0])
-    return parseInt(blob.size, 10)
-  }
-  
-  // Fall back to allocations table (billing table, also has blob info)
+  // Fall back to allocations table (current, still being written to)
+  // blob-registry was meant to replace allocations but migration never completed
   // In allocations table, the key is "multihash" (base58btc encoded)
   const allocationsCommand = new QueryCommand({
     TableName: config.tables.allocations,
@@ -97,5 +81,25 @@ export async function getShardSize(space, shardCID) {
     return parseInt(blob.size, 10)
   }
   
-  throw new Error(`Shard ${shardCID} not found in blob-registry, store, or allocations table for space ${space}`)
+  // Fall back to store table (legacy table)
+  // In the store table, the key is "link" (the CID string) instead of "digest"
+  const storeCommand = new QueryCommand({
+    TableName: config.tables.store,
+    KeyConditionExpression: '#space = :space AND link = :link',
+    ExpressionAttributeNames: {
+      '#space': 'space',
+    },
+    ExpressionAttributeValues: {
+      ':space': { S: space },
+      ':link': { S: shardCID },
+    },
+  })
+  
+  const storeResponse = await client.send(storeCommand)
+  if (storeResponse.Items && storeResponse.Items.length > 0) {
+    const blob = unmarshall(storeResponse.Items[0])
+    return parseInt(blob.size, 10)
+  }
+  
+  throw new Error(`Shard ${shardCID} not found in blob-registry, allocations, or store table for space ${space}`)
 }
