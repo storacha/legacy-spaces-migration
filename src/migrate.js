@@ -3,12 +3,12 @@
  * Main migration script for legacy content
  * 
  * Orchestrates the complete migration workflow:
- * 1. Query uploads needing migration
- * 2. Check what migration steps are needed
- * 3. Generate DAG indices (using index worker)
- * 4. Upload and register indices
- * 5. Republish location claims with space
- * 6. Create gateway authorizations
+ * 1. [x] Query uploads needing migration
+ * 2. [x] Check what migration steps are needed
+ * 3. [x] Generate DAG indices (using index worker)
+ * 4. [ ] Upload and register indices
+ * 5. [ ] Republish location claims with space
+ * 6. [ ] Create gateway authorizations
  * 
  * Usage:
  *   node src/migrate.js --limit 10
@@ -23,14 +23,9 @@ import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
 import { validateConfig } from './config.js'
-import { sampleUploads, getUploadByRoot } from './lib/upload-table.js'
-import { getShardSize } from './lib/blob-registry-table.js'
-import { generateShardedIndex } from './lib/index-worker.js'
-import { sha256 } from 'multiformats/hashes/sha2'
-import * as Link from 'multiformats/link'
-import { CID } from 'multiformats/cid'
+import { sampleUploads, getUploadByRoot } from './lib/tables/upload-table.js'
+import { generateDAGIndex } from './lib/migration-steps.js'
 import { base58btc } from 'multiformats/bases/base58'
-import * as Digest from 'multiformats/hashes/digest'
 
 /**
  * Test index generation for a single upload
@@ -45,52 +40,7 @@ async function testIndexGeneration(upload) {
   console.log()
   
   try {
-    // Query blob registry to get real shard sizes
-    console.log('Querying blob registry for shard sizes...')
-    const shards = []
-    for (const shardCID of upload.shards) {
-      const size = await getShardSize(upload.space, shardCID)
-      shards.push({ cid: shardCID, size })
-      console.log(`  ✓ ${shardCID}: ${size} bytes`)
-    }
-    console.log()
-    
-    // Generate the sharded DAG index for the root CID (upload)
-    const { indexBytes, shardIndices } = await generateShardedIndex(upload.root, shards)
-    
-    // Calculate index CID
-    const indexDigest = await sha256.digest(indexBytes)
-    const indexCID = Link.create(0x0202, indexDigest) // CAR codec
-    
-    console.log()
-    console.log('Generated Sharded DAG Index')
-    console.log('='.repeat(50))
-    console.log()
-    console.log(`Indexes (1):`)
-    console.log(`  ${indexCID}`)
-    console.log(`    Content:`)
-    console.log(`      ${upload.root}`)
-    console.log(`    Shards (${shards.length}):`)
-    
-    for (const { shardCID, slices } of shardIndices) {
-      const shardSize = shards.find(s => s.cid === shardCID.toString())?.size
-      const shardMultihash = base58btc.encode(shardCID.multihash.bytes)
-      
-      console.log(`      ${shardMultihash}`)
-      console.log(`        Slices (${slices.size + 1}):`)
-      
-      // Show shard slice first
-      console.log(`          ${shardMultihash} @ 0-${shardSize}`)
-      
-      // Then show content slices
-      for (const [digestBytes, position] of slices.entries()) {
-        const sliceDigest = Digest.decode(digestBytes)
-        const sliceMultihash = base58btc.encode(sliceDigest.bytes)
-        const [offset, length] = position
-        console.log(`          ${sliceMultihash} @ ${offset}-${offset + length}`)
-      }
-    }
-    
+    const { indexBytes, indexCID, indexDigest } = await generateDAGIndex(upload)
     console.log()
     console.log('Metadata')
     console.log(`  CID: ${indexCID}`)
@@ -138,7 +88,7 @@ async function runTestIndexMode(values) {
       upload = await getUploadByRoot(values.cid)
     } else {
       console.log(`Using space: ${values.space}`)
-      const { getUpload } = await import('./lib/upload-table.js')
+      const { getUpload } = await import('./lib/tables/upload-table.js')
       upload = await getUpload(values.space, values.cid)
     }
     

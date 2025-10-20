@@ -12,6 +12,8 @@ export const config = {
   tables: {
     upload: process.env.UPLOAD_TABLE_NAME || 'prod-w3infra-upload',
     blobRegistry: process.env.BLOB_REGISTRY_TABLE_NAME || 'prod-w3infra-blob-registry',
+    store: process.env.STORE_TABLE_NAME || 'prod-w3infra-store', // Legacy table
+    allocations: process.env.ALLOCATIONS_TABLE_NAME || 'prod-w3infra-allocation', // Billing table (also has blob info)
   },
   
   services: {

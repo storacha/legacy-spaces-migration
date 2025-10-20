@@ -3,7 +3,7 @@
  */
 import { DynamoDBClient, ScanCommand, QueryCommand } from '@aws-sdk/client-dynamodb'
 import { unmarshall } from '@aws-sdk/util-dynamodb'
-import { config } from '../config.js'
+import { config } from '../../config.js'
 
 /**
  * Create DynamoDB client

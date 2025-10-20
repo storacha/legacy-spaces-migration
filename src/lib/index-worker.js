@@ -54,9 +54,11 @@ async function buildIndex(blobKey, size) {
     } catch (err) {
       // If we didn't index any new blocks, this is a fatal error
       if (prevBlocks === blocks) {
-        throw new Error(`Failed to index ${key}`, { cause: err })
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        throw new Error(`Failed to index ${blobKey}: ${errorMsg}`, { cause: err })
       }
       // Otherwise, we indexed some blocks before the error, so we can retry
+      console.warn(`Retrying after partial failure: ${err.message}`)
     }
   }
   console.log(`Built index for ${blobKey} with ${blocks} blocks`)
