@@ -24,6 +24,9 @@ async function buildIndex(shardCID, size) {
   
   let blocks = 0
   let offset = 0
+  let requestCount = 0
+  let consecutiveRetries = 0
+  const MAX_RETRIES = 3
   
   // Try multiple formats:
   // 1. CID string (e.g., bagbaiera... for CIDv1)
@@ -47,7 +50,6 @@ async function buildIndex(shardCID, size) {
         const res = await fetch(url, { method: 'HEAD' })
         if (res.ok) {
           blobKey = testKey
-          console.log(`Found blob at ${testKey}`)
           break
         }
       } catch (err) {
@@ -65,6 +67,7 @@ async function buildIndex(shardCID, size) {
     const prevBlocks = blocks
     
     try {
+      requestCount++
       const url = `${WORKER_URL}/index/${blobKey}?offset=${offset}`
       console.log(`Building index for ${blobKey}?offset=${offset}...`)
       const res = await fetch(url)
@@ -87,18 +90,25 @@ async function buildIndex(shardCID, size) {
         throw new Error('server sent no more blocks even though block offset is less than CAR size')
       }
       
+      // Success - reset retry counter
+      consecutiveRetries = 0
+      
     } catch (err) {
       // If we didn't index any new blocks, this is a fatal error
       if (prevBlocks === blocks) {
         const errorMsg = err instanceof Error ? err.message : String(err)
         throw new Error(`Failed to index ${blobKey}: ${errorMsg}`, { cause: err })
       }
+      
       // Otherwise, we indexed some blocks before the error, so we can retry
-      console.warn(`Retrying after partial failure: ${err.message}`)
+      consecutiveRetries++
+      if (consecutiveRetries > MAX_RETRIES) {
+        throw new Error(`Max retries (${MAX_RETRIES}) exceeded for ${blobKey} at offset ${offset}`, { cause: err })
+      }
+      console.warn(`Retrying after partial failure (attempt ${consecutiveRetries}/${MAX_RETRIES}): ${err.message}`)
     }
   }
-  console.log(`Built index for ${blobKey} with ${blocks} blocks`)
-  return slices
+  return { slices, requestCount }
 }
 
 /**
@@ -118,54 +128,41 @@ export async function generateShardedIndex(rootCID, shards) {
     const shardCID = CID.parse(shard.cid)
     
     // Generate index for the shard using the worker (tries different formats)
-    const slices = await buildIndex(shardCID, shard.size)
+    const { slices, requestCount } = await buildIndex(shardCID, shard.size)
     
-    return { shardCID, slices }
+    return { shardCID, slices, requestCount }
   })
   
   const shardIndices = await Promise.all(shardIndexPromises)
   
-  // Add all slices to the index
-  console.log()
-  console.log('Building Sharded DAG Index')
-  console.log('='.repeat(50))
+  // Calculate total requests
+  const totalRequests = shardIndices.reduce((sum, { requestCount }) => sum + requestCount, 0)
   
+  // Add all slices to the index
   for (const { shardCID, slices } of shardIndices) {
     const shardSize = shards.find(s => s.cid === shardCID.toString())?.size
-    const shardMultihash = base58btc.encode(shardCID.multihash.bytes)
-    
-    console.log()
-    console.log(`Shard: ${shardMultihash}`)
-    console.log(`  Slices (${slices.size + 1}):`)
     
     // Add the shard itself as a slice FIRST (full CAR file)
     if (shardSize) {
-      console.log(`    ${shardMultihash} @ 0-${shardSize}`)
       index.setSlice(shardCID.multihash, shardCID.multihash, { offset: 0, length: shardSize })
     }
     
     // Then add content slices
     for (const [digestBytes, position] of slices.entries()) {
       const sliceDigest = Digest.decode(digestBytes)
-      const sliceMultihash = base58btc.encode(sliceDigest.bytes)
       const [offset, length] = position
-      console.log(`    ${sliceMultihash} @ ${offset}-${offset + length}`)
       index.setSlice(shardCID.multihash, sliceDigest, { offset, length })
     }
   }
-  
-  console.log()
   
   const archiveResult = await index.archive()
   if (archiveResult.error) {
     throw new Error('Failed to archive index', { cause: archiveResult.error })
   }
 
-  console.log(`Sharded index for ${rootCID} generated with success`)
-  
-  // Return both the index bytes and the shard indices for display
   return {
     indexBytes: archiveResult.ok,
     shardIndices,
+    totalRequests,
   }
 }

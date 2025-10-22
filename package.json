@@ -4,8 +4,8 @@
   "type": "module",
   "description": "Migration tooling for legacy spaces to modern indexing system",
   "scripts": {
-    "analyze": "node src/analyze.js",
-    "migrate": "node src/migrate.js"
+    "migrate": "node src/migrate.js",
+    "estimate": "node src/estimate-costs.js"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.911.0",
