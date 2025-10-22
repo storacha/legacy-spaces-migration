@@ -4,10 +4,13 @@ Migration tooling to move legacy content from old indexing systems to the modern
 
 ## Goals
 
-1. **Analyze legacy content** to determine what needs migration
-2. **Add space information** to location claims
-3. **Build/migrate sharded DAG indices** where needed
+1. **Estimate costs** to build sharded DAG indices using the Index Worker
+2. **Build sharded DAG indices** where needed
+3. **Add space information** to location claims
 4. **Create gateway delegations** for content serving
+5. **Publish indices** to enable the indexing service
+6. **Publish location claims** with space information if needed
+7. **Publish public gateway authorizations** for content serving and egress tracking
 
 ## Setup
 
@@ -122,6 +125,30 @@ Test on a single upload before running full migration:
 node src/migrate.js --test-index \
   --space did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ \
   --cid bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+```
+
+### Cost Estimation
+
+Before running the full migration, estimate the costs and duration using the sampling tool.
+
+#### Quick Start
+
+Run a sample of 2,000 uploads to estimate costs:
+
+```bash
+node src/estimate-costs.js --sample 2000 --total 37028823
+```
+
+#### Command Options
+
+```bash
+node src/estimate-costs.js [options]
+
+Options:
+  --sample <N>      Number of uploads to sample (default: 1000)
+  --total <N>       Total uploads in database for extrapolation
+  --space <DID>     Filter to specific space DID (optional)
+  --dry-run         Only count shards without calling index worker
 ```
 
 ## Architecture
