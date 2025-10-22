@@ -22,7 +22,7 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { validateConfig } from './config.js'
+import { validateConfig, config } from './config.js'
 import { sampleUploads, getUploadByRoot } from './lib/tables/upload-table.js'
 import { generateDAGIndex } from './lib/migration-steps.js'
 import { base58btc } from 'multiformats/bases/base58'
@@ -30,7 +30,7 @@ import { base58btc } from 'multiformats/bases/base58'
 /**
  * Test index generation for a single upload
  */
-async function testIndexGeneration(upload) {
+async function testIndexGeneration(upload, options = {}) {
   console.log()
   console.log('Testing Index Generation')
   console.log('='.repeat(50))
@@ -47,6 +47,20 @@ async function testIndexGeneration(upload) {
     console.log(`  Size: ${indexBytes.length} bytes`)
     console.log(`  Multihash: ${base58btc.encode(indexDigest.bytes)}`)
     console.log()
+    
+    // Optionally test upload and registration
+    if (options.testUpload) {
+      const { uploadAndRegisterIndex } = await import('./lib/migration-steps.js')
+      console.log()
+      console.log('Testing Upload and Registration')
+      console.log('='.repeat(50))
+      await uploadAndRegisterIndex({
+        space: upload.space,
+        indexBytes,
+        indexCID,
+        indexDigest,
+      })
+    }
     
     return {
       success: true,
@@ -73,7 +87,7 @@ async function testIndexGeneration(upload) {
  * Run index generation test mode
  */
 async function runTestIndexMode(values) {
-  console.log('Legacy Content Migration - Step 1: Index Generation Test')
+  console.log('Legacy Content Migration - Index Generation & Upload Test')
   console.log('='.repeat(50))
   console.log()
   
@@ -116,14 +130,30 @@ async function runTestIndexMode(values) {
     }
   }
   
-  // Test index generation
-  const result = await testIndexGeneration(upload)
+  // Test index generation (and optionally upload)
+  const result = await testIndexGeneration(upload, {
+    testUpload: values['with-upload']
+  })
+  
+  // Print cache stats if upload was tested
+  if (values['with-upload']) {
+    const { getCacheStats } = await import('./lib/tables/consumer-table.js')
+    const cacheStats = getCacheStats()
+    console.log()
+    console.log('Cache Statistics')
+    console.log('='.repeat(50))
+    console.log(`  Unique spaces cached: ${cacheStats.size}`)
+    console.log()
+  }
   
   // Print summary
   console.log()
   console.log('='.repeat(50))
   if (result.success) {
     console.log('SUCCESS: Index generated successfully!')
+    if (values['with-upload']) {
+      console.log('  Index uploaded and registered with indexing service')
+    }
   } else {
     console.log('FAILED: Index generation failed')
     console.log(`  Upload: ${result.upload}`)
@@ -142,6 +172,11 @@ async function main() {
         type: 'boolean',
         default: false,
         description: 'Run in index generation test mode',
+      },
+      'with-upload': {
+        type: 'boolean',
+        default: false,
+        description: 'Test upload and registration (requires SERVICE_PRIVATE_KEY)',
       },
       cid: {
         type: 'string',
@@ -184,6 +219,17 @@ async function main() {
   })
   
   validateConfig()
+  
+  // Display environment information
+  console.log()
+  console.log('Environment Configuration')
+  console.log('='.repeat(50))
+  console.log(`  Environment: ${config.environment}`)
+  console.log(`  AWS Region: ${config.aws.region}`)
+  console.log(`  Upload Service: ${config.services.uploadService}`)
+  console.log(`  Upload Table: ${config.tables.upload}`)
+  console.log('='.repeat(50))
+  console.log()
   
   // Run in test mode or full migration mode
   if (values['test-index']) {

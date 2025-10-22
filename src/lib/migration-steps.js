@@ -11,9 +11,18 @@
 
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
+import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
+import { Absentee } from '@ucanto/principal'
+import { delegate } from '@ucanto/core'
+import * as Signer from '@ucanto/principal/ed25519'
+import * as UCAN from '@storacha/capabilities/ucan'
+import { connect } from '@ucanto/client'
+import { CAR, HTTP } from '@ucanto/transport'
 import { generateShardedIndex } from './index-worker.js'
 import { queryIndexingService } from './indexing-service.js'
 import { getShardSize } from './tables/blob-registry-table.js'
+import { getCustomerForSpace } from './tables/consumer-table.js'
+import { config } from '../config.js'
 
 /**
  * Determine what migration steps are needed for an upload
@@ -92,29 +101,95 @@ export async function generateDAGIndex(upload) {
  * @param {Uint8Array} params.indexBytes - Index CAR bytes
  * @param {import('multiformats').CID} params.indexCID - Index CID
  * @param {import('multiformats').MultihashDigest} params.indexDigest - Index digest
- * @param {object} params.uploadClient - Upload client with credentials
  * @returns {Promise<void>}
  */
-export async function uploadAndRegisterIndex({ space, indexBytes, indexCID, indexDigest, uploadClient }) {
-  console.log(`  Uploading index blob...`)
+export async function uploadAndRegisterIndex({ space, indexBytes, indexCID, indexDigest }) {
+  console.log(`  Uploading and registering new index...`)
   
-  // TODO: Implement space/blob/add invocation
-  // This requires:
-  // 1. Create delegation with Absentee issuer for the space
-  // 2. Service attests the delegation using ucan/attest
-  // 3. Invoke space/blob/add with the attested delegation
-  // 4. Upload bytes to the presigned URL
+  // Create service signer from private key
+  if (!config.credentials.servicePrivateKey) {
+    throw new Error('SERVICE_PRIVATE_KEY not configured')
+  }
   
-  console.log(`    TODO: Implement space/blob/add`)
+  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
+  const serviceURL = new URL(config.services.uploadService)
+  const connection = connect({
+    id: serviceSigner,
+    codec: CAR.outbound,
+    channel: HTTP.open({ url: serviceURL })
+  })
   
-  // TODO: Implement space/index/add invocation
-  // This requires:
-  // 1. Create delegation with Absentee issuer for the space
-  // 2. Service attests the delegation
-  // 3. Invoke space/index/add with the attested delegation
-  // 4. This publishes assert/index claim to indexing service
+  // Get customer (account) DID for this space
+  console.log(`    Looking up customer for space...`)
+  const customer = await getCustomerForSpace(space)
+  if (!customer) {
+    throw new Error(`No customer found for space ${space}`)
+  }
   
-  console.log(`    TODO: Implement space/index/add`)
+  // Create Absentee delegation from customer to service
+  // The customer (account) owns the space and delegates authority to the service
+  const authorization = await delegate({
+    issuer: Absentee.from({ id: customer }),
+    audience: serviceSigner,
+    capabilities: [
+      { can: 'space/blob/add', with: space },
+      { can: 'space/index/add', with: space },
+    ],
+    expiration: Infinity,
+  })
+  
+  // Service attests the delegation
+  // This creates a proof that the Absentee delegation is valid
+  console.log(`    Creating attestation...`)
+  const attestation = await UCAN.attest
+    .invoke({
+      issuer: serviceSigner,
+      audience: serviceSigner,
+      with: serviceSigner.did(),
+      nb: { proof: authorization.cid },
+      expiration: Infinity,
+    })
+    .delegate()  // Creates a delegation, not an execution
+  
+  // Both authorization and attestation are needed as proofs
+  const proofs = [authorization, attestation]
+  
+  // Upload index blob via space/blob/add
+  console.log(`    Uploading index blob (${indexBytes.length} bytes)...`)
+  try {
+    await SpaceBlob.add(
+      {
+        issuer: serviceSigner,
+        with: space,
+        proofs,
+        audience: connection.id,
+      },
+      indexDigest,
+      indexBytes,
+      { connection }
+    )
+    console.log(`    ✓ Index blob uploaded`)
+  } catch (error) {
+    throw new Error(`Failed to upload index blob: ${error.message}`)
+  }
+  
+  // Register index via space/index/add (publishes assert/index claim)
+  console.log(`    Registering index with indexing service...`)
+  try {
+    await Index.add(
+      {
+        issuer: serviceSigner,
+        with: space,
+        proofs,
+        audience: connection.id,
+      },
+      indexCID,
+      { connection }
+    )
+    console.log(`    ✓ Index registered (assert/index claim published)`)
+  } catch (error) {
+    throw new Error(`Failed to register index: ${error.message}`)
+  }
 }
 
 // ============================================
