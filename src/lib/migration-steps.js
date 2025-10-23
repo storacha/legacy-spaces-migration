@@ -3,29 +3,30 @@
  * 
  * Each function handles one specific migration task:
  * 1. Check if migration is needed
- * 2. Generate DAG index (using index worker)
- * 3. Upload and register index
- * 4. Republish location claims with space
- * 5. Create gateway authorization
+ * 2. Build, upload and register index
+ * 3. Republish location claims with space info
+ * 4. Create gateway content/serve authorization
  */
 
-import { sha256 } from 'multiformats/hashes/sha2'
-import * as Link from 'multiformats/link'
 import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
-import { Absentee } from '@ucanto/principal'
-import { delegate } from '@ucanto/core'
 import * as Signer from '@ucanto/principal/ed25519'
-import * as UCAN from '@storacha/capabilities/ucan'
 import { connect } from '@ucanto/client'
-import { CAR, HTTP } from '@ucanto/transport'
-import { generateShardedIndex } from './index-worker.js'
+import * as CAR from '@ucanto/transport/car'
+import * as HTTP from '@ucanto/transport/http'
 import { queryIndexingService } from './indexing-service.js'
-import { getShardSize } from './tables/blob-registry-table.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
+import { incrementIndexCount } from './tables/migration-spaces-table.js'
+import {
+  getOrCreateMigrationSpaceForCustomer,
+  provisionMigrationSpace,
+  delegateMigrationSpaceToCustomer,
+  generateDAGIndex,
+} from './migration-utils.js'
 import { config } from '../config.js'
 
 /**
- * Determine what migration steps are needed for an upload
+ * Determine what migration steps are needed for an upload by checking the indexing service
+ * for existing claims.
  * 
  * @param {object} upload - Upload from Upload Table
  * @param {string} upload.space - Space DID
@@ -42,7 +43,6 @@ import { config } from '../config.js'
  * }>}
  */
 export async function checkMigrationNeeded(upload) {
-  // Query indexing service for existing claims
   const indexingData = await queryIndexingService(upload.root)
   
   return {
@@ -57,59 +57,32 @@ export async function checkMigrationNeeded(upload) {
 }
 
 /**
- * Generate sharded DAG index using the index worker
+ * Build, upload and register index
  * 
- * @param {object} upload - Upload from Upload Table
- * @param {string} upload.space - Space DID
- * @param {string} upload.root - Root CID
- * @param {string[]} upload.shards - Shard CIDs
- * @returns {Promise<{indexBytes: Uint8Array, indexCID: import('multiformats').CID, indexDigest: import('multiformats').MultihashDigest}>}
- */
-export async function generateDAGIndex(upload) {
-  console.log(`  Generating DAG index for ${upload.root}...`)
-  
-  // Get shard sizes using three-table lookup
-  console.log(`  Querying blob registry for shard sizes...`)
-  const shards = []
-  for (const shardCIDString of upload.shards) {
-    const size = await getShardSize(upload.space, shardCIDString)
-    shards.push({
-      cid: shardCIDString,
-      size,
-    })
-    console.log(`    ✓ ${shardCIDString}: ${size} bytes`)
-  }
-  
-  // Generate index using worker
-  const result = await generateShardedIndex(upload.root, shards)
-  const indexBytes = result.indexBytes
-  
-  // Calculate index CID
-  const indexDigest = await sha256.digest(indexBytes)
-  const indexCID = Link.create(0x0202, indexDigest) // CAR codec
-  
-  console.log(`    ✓ Generated index: ${indexCID} (${indexBytes.length} bytes)`)
-  
-  return { indexBytes, indexCID, indexDigest }
-}
-
-/**
- * Upload index blob and register it via space/blob/add and space/index/add
+ * Generates a sharded DAG index, then uploads it to a migration space.
+ * Creates one migration space per customer where all their legacy indexes are stored.
+ * This provides clean proof chains and clear visibility for customers.
  * 
  * @param {object} params
- * @param {string} params.space - Space DID
- * @param {Uint8Array} params.indexBytes - Index CAR bytes
- * @param {import('multiformats').CID} params.indexCID - Index CID
- * @param {import('multiformats').MultihashDigest} params.indexDigest - Index digest
- * @returns {Promise<void>}
+ * @param {object} params.upload - Upload record from Upload Table
+ * @param {string} params.upload.space - Original space DID (where content was uploaded)
+ * @param {string} params.upload.root - Root CID (content to index)
+ * @param {string[]} params.upload.shards - Shard CIDs (CAR files containing the content)
+ * @returns {Promise<{migrationSpace: string, indexCID: import('multiformats').CID}>}
+ *   - migrationSpace: DID of the migration space where index was uploaded
+ *   - indexCID: CID of the generated index
  */
-export async function uploadAndRegisterIndex({ space, indexBytes, indexCID, indexDigest }) {
-  console.log(`  Uploading and registering new index...`)
+export async function buildAndMigrateIndex({ upload }) {
+  console.log(`  Building and migrating index...`)
+  console.log(`    Original space: ${upload.space}`)
+  console.log(`    Content root: ${upload.root}`)
   
-  // Create service signer from private key
   if (!config.credentials.servicePrivateKey) {
     throw new Error('SERVICE_PRIVATE_KEY not configured')
   }
+
+  // Generate sharded DAG index for the content
+  const { indexBytes, indexCID, indexDigest } = await generateDAGIndex(upload)
   
   const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
   const serviceURL = new URL(config.services.uploadService)
@@ -119,68 +92,55 @@ export async function uploadAndRegisterIndex({ space, indexBytes, indexCID, inde
     channel: HTTP.open({ url: serviceURL })
   })
   
-  // Get customer (account) DID for this space
-  console.log(`    Looking up customer for space...`)
-  const customer = await getCustomerForSpace(space)
+  console.log(`    Looking up customer for original space...`)
+  const customer = await getCustomerForSpace(upload.space)
   if (!customer) {
-    throw new Error(`No customer found for space ${space}`)
+    throw new Error(`No customer found for space ${upload.space}`)
   }
   
-  // Create Absentee delegation from customer to service
-  // The customer (account) owns the space and delegates authority to the service
-  const authorization = await delegate({
-    issuer: Absentee.from({ id: customer }),
-    audience: serviceSigner,
-    capabilities: [
-      { can: 'space/blob/add', with: space },
-      { can: 'space/index/add', with: space },
-    ],
-    expiration: Infinity,
-  })
+  console.log(`    Getting/creating migration space for customer...`)
+  const { space: migrationSpace, isNew, spaceDID: migrationSpaceDID } = await getOrCreateMigrationSpaceForCustomer(customer)
   
-  // Service attests the delegation
-  // This creates a proof that the Absentee delegation is valid
-  console.log(`    Creating attestation...`)
-  const attestation = await UCAN.attest
-    .invoke({
-      issuer: serviceSigner,
-      audience: serviceSigner,
-      with: serviceSigner.did(),
-      nb: { proof: authorization.cid },
-      expiration: Infinity,
+  // Verify we have the migration space signer
+  if (!migrationSpace) {
+    throw new Error('Migration space not available - this should never happen!')
+  }
+  console.log(`    Migration space: ${migrationSpaceDID} ${isNew ? '(newly created)' : '(existing)'}`)
+
+  // Provision migration space to customer (only if newly created)
+  if (isNew) {
+    await provisionMigrationSpace({
+      customer,
+      migrationSpaceDID,
     })
-    .delegate()  // Creates a delegation, not an execution
+  }
   
-  // Both authorization and attestation are needed as proofs
-  const proofs = [authorization, attestation]
-  
-  // Upload index blob via space/blob/add
+  // Upload index blob to migration space via space/blob/add
   console.log(`    Uploading index blob (${indexBytes.length} bytes)...`)
   try {
     await SpaceBlob.add(
       {
-        issuer: serviceSigner,
-        with: space,
-        proofs,
+        issuer: migrationSpace,      // Sign with migration space key
+        with: migrationSpaceDID,     // Upload to migration space
         audience: connection.id,
       },
       indexDigest,
       indexBytes,
       { connection }
     )
-    console.log(`    ✓ Index blob uploaded`)
+    console.log(`    ✓ Index blob uploaded to migration space`)
   } catch (error) {
     throw new Error(`Failed to upload index blob: ${error.message}`)
   }
   
   // Register index via space/index/add (publishes assert/index claim)
   console.log(`    Registering index with indexing service...`)
+  let indexInvocation
   try {
-    await Index.add(
+    indexInvocation = await Index.add(
       {
-        issuer: serviceSigner,
-        with: space,
-        proofs,
+        issuer: migrationSpace,      // Sign with migration space key
+        with: migrationSpaceDID,     // Register for migration space
         audience: connection.id,
       },
       indexCID,
@@ -190,11 +150,23 @@ export async function uploadAndRegisterIndex({ space, indexBytes, indexCID, inde
   } catch (error) {
     throw new Error(`Failed to register index: ${error.message}`)
   }
+  
+  // Increment index count in tracking table
+  await incrementIndexCount(customer)
+  
+  // Delegate full access to customer (only if newly created space)
+  if (isNew) {
+    console.log(`    Delegating migration space access to customer...`)
+    await delegateMigrationSpaceToCustomer({
+      migrationSpace,
+      migrationSpaceDID,
+      customer,
+      cause: indexInvocation.cid, // Link delegation to index registration
+    })
+  }
+  
+  return { migrationSpace: migrationSpaceDID, indexCID }
 }
-
-// ============================================
-// STEP 4: Republish Location Claims with Space
-// ============================================
 
 /**
  * Republish location claims with space information
@@ -217,10 +189,6 @@ export async function republishLocationClaims({ space, root, shards, uploadClien
   
   console.log(`    TODO: Implement assert/location claim publishing`)
 }
-
-// ============================================
-// STEP 5: Create Gateway Authorization
-// ============================================
 
 /**
  * Create gateway authorization delegation for the space

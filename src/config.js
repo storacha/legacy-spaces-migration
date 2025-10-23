@@ -54,6 +54,9 @@ export const config = {
     store: process.env.STORE_TABLE_NAME || `${env.tablePrefix}-store`, // Legacy table
     allocations: process.env.ALLOCATIONS_TABLE_NAME || `${env.tablePrefix}-allocation`, // Billing table (also has blob info)
     consumer: process.env.CONSUMER_TABLE_NAME || `${env.tablePrefix}-consumer`, // Space ownership (space -> customer mapping)
+    subscription: process.env.SUBSCRIPTION_TABLE_NAME || `${env.tablePrefix}-subscription`, // Billing subscriptions (customer -> provider relationship)
+    delegation: process.env.DELEGATION_TABLE_NAME || `${env.tablePrefix}-delegation`, // Delegation storage
+    migrationSpaces: process.env.MIGRATION_SPACES_TABLE_NAME || `${process.env.STORACHA_ENV || 'prod'}-migration-spaces`, // Migration space tracking
   },
   
   services: {
@@ -64,6 +67,7 @@ export const config = {
   
   storage: {
     carparkBucket: process.env.CARPARK_BUCKET || env.carparkBucket,
+    delegationBucket: process.env.DELEGATION_BUCKET_NAME || `${env.tablePrefix}-delegation`,
     carparkPublicUrl: process.env.CARPARK_PUBLIC_URL || env.carparkPublicUrl,
   },
   
@@ -81,6 +85,14 @@ export const config = {
   
   admin: {
     privateKey: process.env.ADMIN_PRIVATE_KEY,
+  },
+  
+  encryption: {
+    // 32-byte key for AES-256 encryption of migration space private keys
+    // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    key: process.env.MIGRATION_ENCRYPTION_KEY 
+      ? Buffer.from(process.env.MIGRATION_ENCRYPTION_KEY, 'base64')
+      : null,
   },
 }
 
