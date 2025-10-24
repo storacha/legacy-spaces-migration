@@ -1,5 +1,9 @@
 /**
- * Query Blob Registry Table
+ * Query shard data by looking up the size in the allocations table,
+ * then the store table if not found.
+ * The Blob Registry was meant to replace allocations but migration never completed.
+ * We are still writing to the blob-registry and allocations tables.
+ * So we can query either table to get the size, but the majority of the data is in allocations.
  */
 import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb'
 import { unmarshall } from '@aws-sdk/util-dynamodb'
@@ -21,13 +25,12 @@ export function createDynamoClient() {
 }
 
 /**
- * Query blob registry to get shard size
- * Falls back to allocations table then store table if not found
+ * Query allocations table to get shard size
+ * Falls back to store table if not found
  * 
  * Query order:
- * 1. blob-registry (newest, intended replacement)
- * 2. allocations (current, still being written to)
- * 3. store (legacy)
+ * 1. allocations (current, still being written to)
+ * 2. store (legacy)
  * 
  * @param {string} space - Space DID
  * @param {string} shardCID - Shard CID (CAR CID)
@@ -40,26 +43,7 @@ export async function getShardSize(space, shardCID) {
   const cid = CID.parse(shardCID)
   const digest = base58btc.encode(cid.multihash.bytes)
   
-  // Try blob-registry first (newest table)
-  const blobRegistryCommand = new QueryCommand({
-    TableName: config.tables.blobRegistry,
-    KeyConditionExpression: '#space = :space AND digest = :digest',
-    ExpressionAttributeNames: {
-      '#space': 'space',
-    },
-    ExpressionAttributeValues: {
-      ':space': { S: space },
-      ':digest': { S: digest },
-    },
-  })
-  
-  const blobRegistryResponse = await client.send(blobRegistryCommand)
-  if (blobRegistryResponse.Items && blobRegistryResponse.Items.length > 0) {
-    const blob = unmarshall(blobRegistryResponse.Items[0])
-    return blob.size
-  }
-  
-  // Fall back to allocations table (current, still being written to)
+  // Query allocations table (current, still being written to)
   // blob-registry was meant to replace allocations but migration never completed
   // In allocations table, the key is "multihash" (base58btc encoded)
   const allocationsCommand = new QueryCommand({
@@ -101,5 +85,5 @@ export async function getShardSize(space, shardCID) {
     return parseInt(blob.size, 10)
   }
   
-  throw new Error(`Shard ${shardCID} not found in blob-registry, allocations, or store table for space ${space}`)
+  throw new Error(`Shard ${shardCID} not found in allocations or store table for space ${space}`)
 }

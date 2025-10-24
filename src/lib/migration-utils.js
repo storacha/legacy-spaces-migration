@@ -11,7 +11,7 @@ import * as Signer from '@ucanto/principal/ed25519'
 import { Verifier } from '@ucanto/principal'
 import { delegate } from '@ucanto/core'
 import { generateShardedIndex } from './index-worker.js'
-import { getShardSize } from './tables/blob-registry-table.js'
+import { getShardSize } from './tables/shard-data-table.js'
 import {
   getMigrationSpace,
   createMigrationSpace,
@@ -143,7 +143,12 @@ export async function delegateMigrationSpaceToCustomer({
  * @param {string} upload.space - Space DID
  * @param {string} upload.root - Root CID
  * @param {string[]} upload.shards - Shard CIDs
- * @returns {Promise<{indexBytes: Uint8Array, indexCID: import('multiformats').CID, indexDigest: import('multiformats').MultihashDigest}>}
+ * @returns {Promise<{
+ *   indexBytes: Uint8Array,
+ *   indexCID: import('multiformats').CID,
+ *   indexDigest: import('multiformats').MultihashDigest,
+ *   shards: Array<{cid: string, size: number}>
+ * }>}
  */
 export async function generateDAGIndex(upload) {
   console.log(`  Generating DAG index for ${upload.root}...`)
@@ -170,5 +175,6 @@ export async function generateDAGIndex(upload) {
   
   console.log(`    ✓ Generated index: ${indexCID} (${indexBytes.length} bytes)`)
   
-  return { indexBytes, indexCID, indexDigest }
+  // Return shards with sizes for reuse downstream (avoids re-querying DynamoDB)
+  return { indexBytes, indexCID, indexDigest, shards }
 }
