@@ -5,12 +5,15 @@
   "description": "Migration tooling for legacy spaces to modern indexing system",
   "scripts": {
     "migrate": "node src/migrate.js",
-    "estimate": "node src/estimate-costs.js"
+    "estimate": "node src/estimate-costs.js",
+    "encryption:keygen": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\""
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.911.0",
+    "@aws-sdk/client-s3": "^3.911.0",
     "@aws-sdk/util-dynamodb": "^3.911.0",
     "@ipld/dag-json": "^10.2.5",
+    "@storacha/access": "^1.4.0",
     "@storacha/blob-index": "^1.2.1",
     "@storacha/capabilities": "^1.9.0",
     "@storacha/indexing-service-client": "^2.5.0",

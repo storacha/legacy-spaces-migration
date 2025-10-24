@@ -4,11 +4,11 @@ Migration tooling to move legacy content from old indexing systems to the modern
 
 ## Goals
 
-1. **Estimate costs** to build sharded DAG indices using the Index Worker
-2. **Build sharded DAG indices** where needed
-3. **Add space information** to location claims
-4. **Create gateway delegations** for content serving
-5. **Publish indices** to enable the indexing service
+1. ✅ **Estimate costs** to build sharded DAG indices using the Index Worker
+2. ✅ **Build sharded DAG indices** where needed (using Index Worker)
+3. ✅ **Upload and register indices** via space/blob/add and space/index/add
+4. **Add space information** to location claims
+5. **Create gateway delegations** for content serving
 6. **Publish location claims** with space information if needed
 7. **Publish public gateway authorizations** for content serving and egress tracking
 
@@ -22,7 +22,34 @@ pnpm install
 
 ### 2. Configure Environment Variables
 
-Copy the example environment file and configure your AWS credentials:
+Create a `.env` file based on `.env.example`:
+
+**The easiest way to switch between environments is using `STORACHA_ENV`:**
+
+```bash
+# .env file
+
+# For staging (us-east-2, staging-w3infra-* tables)
+STORACHA_ENV=staging
+
+# For production (us-west-2, prod-w3infra-* tables) - default
+# STORACHA_ENV=production
+
+# AWS credentials (same for both environments)
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+
+# Service credentials
+SERVICE_PRIVATE_KEY=your_base64_encoded_ed25519_private_key
+```
+
+This automatically configures:
+- **AWS Region** (staging: `us-east-2`, production: `us-west-2`)
+- **Table names** (`staging-w3infra-*` vs `prod-w3infra-*`)
+- **Service URLs** (`staging.*` vs `production.*`)
+- **R2 buckets** (`carpark-staging-0` vs `carpark-prod-0`)
+
+Alternatively, you can configure your environment variables manually:
 
 ```bash
 cp .env.example .env
@@ -63,15 +90,38 @@ CARPARK_PUBLIC_URL=https://carpark-prod-0.r2.w3s.link
 Test the complete index generation flow on a single upload:
 
 ```bash
-# Test specific upload (requires space and CID)
-node src/migrate.js --test-index \
-  --space did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ \
-  --cid bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+# Option 1: Inline environment variable
+STORACHA_ENV=staging node src/migrate.js --test-index --with-upload --cid <cid>
+
+# Option 2: Set in .env file
+cp .env.example .env
+# Edit .env and set STORACHA_ENV=staging
+node src/migrate.js --test-index --with-upload --cid <cid>
 ```
 
-**Example output:**
+The script will display the active environment at startup:
 ```
-Legacy Content Migration - Step 1: Index Generation Test
+Environment Configuration
+==================================================
+  Environment: staging
+  AWS Region: us-east-2
+  Upload Service: https://staging.up.storacha.network
+  Upload Table: staging-w3infra-upload
+==================================================
+```
+
+### Switch to Production:
+```bash
+# Change STORACHA_ENV in .env to production
+STORACHA_ENV=production
+
+# Or inline
+STORACHA_ENV=production node src/migrate.js ...
+```
+
+**Example output (with --with-upload):**
+```
+Legacy Content Migration - Index Generation & Upload Test
 ==================================================
 
 Querying upload by CID: bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
@@ -92,14 +142,6 @@ Generating sharded index for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2nd
 Building index for zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV/zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV.blob?offset=0...
 Built index for zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV/zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV.blob with 1 blocks
 
-Building Sharded DAG Index
-==================================================
-
-Shard: zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV
-  Slices (2):
-    zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV @ 0-8409
-    zQmY5aZff9bdqtcS5pPQFyCCD7VUajnPdxED5iswgSfYWe8 @ 97-8409
-
 Sharded index for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu generated with success
     ✓ Generated index: bagbaieravpqlox52iz7p5i7ack44q2vml7ykmzkaid3c3ecw4czw26csjyla (408 bytes)
 
@@ -109,8 +151,18 @@ Metadata
   Multihash: zQmZubAazYZAebEmj7nAhH96AeQufizRTRaj8ZYQn4kd1cy
 
 
+Testing Upload and Registration
+==================================================
+  Uploading and registering index...
+    Attesting delegation...
+    Uploading index blob (408 bytes)...
+    ✓ Index blob uploaded
+    Registering index with indexing service...
+    ✓ Index registered (assert/index claim published)
+
 ==================================================
 SUCCESS: Index generated successfully!
+  Index uploaded and registered with indexing service
 ==================================================
 ```
 
