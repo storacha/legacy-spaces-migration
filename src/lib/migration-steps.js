@@ -13,10 +13,10 @@ import * as Signer from '@ucanto/principal/ed25519'
 import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
 import * as HTTP from '@ucanto/transport/http'
-import { Absentee } from '@ucanto/principal'
-import * as UCAN from '@storacha/capabilities/ucan'
 import { Assert } from '@web3-storage/content-claims/capability'
 import { CID } from 'multiformats/cid'
+import { base58btc } from 'multiformats/bases/base58'
+import * as Digest from 'multiformats/hashes/digest'
 import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
@@ -63,18 +63,16 @@ export async function checkMigrationNeeded(upload) {
   
   for (const claim of locationClaims) {
     // Get the content multihash from the claim
-    const contentMultihash = claim.content?.digest || claim.content?.multihash
-    if (contentMultihash) {
-      const hasSpace = claim.space != null
-      shardLocationMap.set(contentMultihash.toString(), { claim, hasSpace })
-    }
+    const contentMultihash = claim.content.multihash ?? Digest.decode(claim.content.digest)
+    const hasSpace = claim.space != null
+    shardLocationMap.set(base58btc.encode(contentMultihash.bytes), { claim, hasSpace })
   }
   
   // Check each shard to see if it needs a location claim or needs space info added
   const shardsNeedingLocationClaims = []
   for (const shardCID of upload.shards) {
     const cid = CID.parse(shardCID)
-    const multihashStr = cid.multihash.toString()
+    const multihashStr = base58btc.encode(cid.multihash.bytes)
     
     const locationInfo = shardLocationMap.get(multihashStr)
     if (!locationInfo) {
@@ -228,7 +226,7 @@ export async function buildAndMigrateIndex({ upload }) {
 /**
  * Republish location claims with space information
  * 
- * Uses the Absentee + ucan/attest pattern to publish location claims that include
+ * Publishes location claims signed directly with the service private key, including
  * space DIDs. This enables the freeway to properly track egress per space.
  * 
  * @param {object} params
@@ -271,9 +269,9 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
       // Construct location URL from carpark
       const location = `${config.storage.carparkPublicUrl}/${shardCID}`
       
-      // Create delegation with Absentee issuer
-      const delegation = await Assert.location.delegate({
-        issuer: Absentee.from({ id: serviceSigner.did() }),
+      // Invoke directly with service signer (simpler than Absentee + attestation)
+      const result = await Assert.location.invoke({
+        issuer: serviceSigner,
         audience: claimsConnection.id,
         with: serviceSigner.did(),
         nb: {
@@ -283,30 +281,6 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
           space,  // space field included to enable egress tracking
         },
         expiration: Infinity,
-      })
-
-      // Service attests the delegation
-      const attestation = await UCAN.attest.delegate({
-        issuer: serviceSigner,
-        audience: serviceSigner,
-        with: serviceSigner.did(),
-        nb: { proof: delegation.cid },
-        expiration: Infinity,
-      })
-
-      // Invoke with both proofs
-      const result = await Assert.location.invoke({
-        issuer: serviceSigner,
-        audience: claimsConnection.id,
-        with: serviceSigner.did(),
-        nb: {
-          content: { digest },
-          location: [location],
-          range: { offset: 0, length: size },
-          space,
-        },
-        expiration: Infinity,
-        proofs: [delegation, attestation],
       }).execute(claimsConnection)
 
       if (result.out.error) {
