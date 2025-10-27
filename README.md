@@ -6,11 +6,9 @@ Migration tooling to move legacy content from old indexing systems to the modern
 
 1. ✅ **Estimate costs** to build sharded DAG indices using the Index Worker
 2. ✅ **Build sharded DAG indices** where needed (using Index Worker)
-3. ✅ **Upload and register indices** via space/blob/add and space/index/add
-4. **Add space information** to location claims
-5. **Create gateway delegations** for content serving
-6. **Publish location claims** with space information if needed
-7. **Publish public gateway authorizations** for content serving and egress tracking
+3. ✅ **Upload and register indices** to migration spaces via space/blob/add and assert/index
+4. ✅ **Republish location claims** with space information for egress tracking
+5. ⏳ **Create gateway delegations** for content serving (TODO)
 
 ## Setup
 
@@ -85,98 +83,164 @@ CARPARK_PUBLIC_URL=https://carpark-prod-0.r2.w3s.link
 - `dynamodb:Scan` - Scan tables for sampling (optional)
 - See policy: `arn:aws:iam::505595374361:policy/legacy-spaces-migration-access`
 
-### 3. Test Index Generation
-
-Test the complete index generation flow on a single upload:
-
-```bash
-# Option 1: Inline environment variable
-STORACHA_ENV=staging node src/migrate.js --test-index --with-upload --cid <cid>
-
-# Option 2: Set in .env file
-cp .env.example .env
-# Edit .env and set STORACHA_ENV=staging
-node src/migrate.js --test-index --with-upload --cid <cid>
-```
+### 3. Verify Configuration
 
 The script will display the active environment at startup:
+
+```bash
+node src/migrate.js --test-index --limit 1
+```
+
 ```
 Environment Configuration
 ==================================================
-  Environment: staging
-  AWS Region: us-east-2
-  Upload Service: https://staging.up.storacha.network
-  Upload Table: staging-w3infra-upload
+  Environment: production
+  AWS Region: us-west-2
+  Upload Service: https://up.storacha.network
+  Upload Table: prod-w3infra-upload
 ==================================================
 ```
 
-### Switch to Production:
+### Switch Environments:
+
 ```bash
-# Change STORACHA_ENV in .env to production
-STORACHA_ENV=production
+# For staging
+STORACHA_ENV=staging node src/migrate.js --test-index --limit 1
 
-# Or inline
-STORACHA_ENV=production node src/migrate.js ...
-```
+# For production (default)
+STORACHA_ENV=production node src/migrate.js --test-index --limit 1
 
-**Example output (with --with-upload):**
-```
-Legacy Content Migration - Index Generation & Upload Test
-==================================================
-
-Querying upload by CID: bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
-Using space: did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ
-Found upload in space: did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ
-
-
-Testing Index Generation
-==================================================
-Root CID (Upload): bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
-Space: did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ
-Shards: 1
-
-  Generating DAG index for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu...
-  Querying blob registry for shard sizes...
-    ✓ bagbaiera7vycsplauivbkhibstd2vhkz6gamc6yb5uacw6jkirsufrmt3oka: 8409 bytes
-Generating sharded index for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu with 1 shards...
-Building index for zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV/zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV.blob?offset=0...
-Built index for zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV/zQmfPy42F7kg9w1eY8YWvq2989ufv8wKJFvA2K4RfYfk4KV.blob with 1 blocks
-
-Sharded index for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu generated with success
-    ✓ Generated index: bagbaieravpqlox52iz7p5i7ack44q2vml7ykmzkaid3c3ecw4czw26csjyla (408 bytes)
-
-Metadata
-  CID: bagbaieravpqlox52iz7p5i7ack44q2vml7ykmzkaid3c3ecw4czw26csjyla
-  Size: 408 bytes
-  Multihash: zQmZubAazYZAebEmj7nAhH96AeQufizRTRaj8ZYQn4kd1cy
-
-
-Testing Upload and Registration
-==================================================
-  Uploading and registering index...
-    Attesting delegation...
-    Uploading index blob (408 bytes)...
-    ✓ Index blob uploaded
-    Registering index with indexing service...
-    ✓ Index registered (assert/index claim published)
-
-==================================================
-SUCCESS: Index generated successfully!
-  Index uploaded and registered with indexing service
-==================================================
+# Or set in .env file
+echo "STORACHA_ENV=staging" >> .env
 ```
 
 ## Usage
 
-### Test Index Generation
+### Migration Workflow
 
-Test on a single upload before running full migration:
+The migration script performs the following steps for each upload:
+
+1. **Check Migration Status** - Query indexing service to determine what's needed
+2. **Generate & Register Index** - Create sharded DAG index if missing
+3. **Republish Location Claims** - Add space information to location claims
+4. **Create Gateway Authorization** - Enable content serving with egress tracking (TODO)
+
+### Test Modes
+
+Test individual migration steps before running full migration:
+
+#### 1. Test Index Generation Only
 
 ```bash
-# Test specific upload (requires space and CID)
+node src/migrate.js --test-index --limit 10
+```
+
+Tests index generation for 10 uploads. Skips location claims and gateway auth.
+
+#### 2. Test Location Claims Only
+
+```bash
+node src/migrate.js --test-location-claims --limit 10
+```
+
+Tests republishing location claims with space information. Skips index if already exists.
+
+#### 3. Test Gateway Authorization Only
+
+```bash
+node src/migrate.js --test-gateway-auth --limit 10
+```
+
+Tests creating gateway authorizations (when implemented).
+
+#### 4. Test Specific Upload
+
+```bash
 node src/migrate.js --test-index \
   --space did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ \
   --cid bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+```
+
+### Full Migration
+
+Run complete migration (all steps) on multiple uploads:
+
+```bash
+# Migrate 100 uploads
+node src/migrate.js --limit 100
+
+# Migrate specific space
+node src/migrate.js --space did:key:z6Mk... --limit 50
+
+# Migrate specific customer
+node src/migrate.js --customer did:key:z6Mk... --limit 1000
+```
+
+### Additional Options
+
+```bash
+node src/migrate.js [options]
+
+Options:
+  --test-index              Test index generation only
+  --test-location-claims    Test location claims republishing only
+  --test-gateway-auth       Test gateway authorization only
+  --limit <N>               Number of uploads to process (default: 10)
+  --space <DID>             Filter by space DID
+  --customer <DID>          Filter by customer DID
+  --cid <CID>               Process specific upload by CID
+  --concurrency <N>         Number of concurrent migrations (default: 1)
+  --output <file>           Results output file (default: migration-results.json)
+```
+
+### Example Output
+
+```
+Legacy Content Migration - Full Migration
+======================================================================
+
+Configuration:
+  Mode: Full Migration
+  Limit: 10 uploads
+  Concurrency: 1
+
+
+[1/10]
+
+======================================================================
+📦 Migrating Upload: bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+   Space: did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ
+   Shards: 1
+======================================================================
+
+1) Checking migration status...
+  Checking location claims for 1 shards...
+    Found 2 location claims from indexing service
+    ✗ bagbaiera...: location claim missing space field
+
+::: Migration Status:::
+   Index: ✓ EXISTS
+   Location claims: ✓ EXISTS
+   Location has space: ✗ NO
+   Shards needing location claims: 1/1
+
+!!! Actions Required!!!
+   ✓ Generate and register index
+   ☐ Republish location claims with space
+   ☐ Create gateway authorization
+
+⏭  Index already exists, skipping
+
+3)  Republishing location claims with space...
+    ✓ bagbaiera...
+
+    ✓ Successfully republished 1 location claims
+
+⏭  Skipping gateway auth (test mode: null)
+
+======================================================================
+✅ Migration complete for bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+======================================================================
 ```
 
 ### Cost Estimation

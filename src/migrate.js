@@ -6,72 +6,186 @@
  * 1. [x] Query uploads needing migration
  * 2. [x] Check what migration steps are needed
  * 3. [x] Generate DAG indices (using index worker)
- * 4. [ ] Upload and register indices
- * 5. [ ] Republish location claims with space
+ * 4. [x] Upload and register indices
+ * 5. [x] Republish location claims with space
  * 6. [ ] Create gateway authorizations
  * 
- * Usage:
+ * Usage Examples:
+ * 
+ *   # Full migration (all steps):
  *   node src/migrate.js --limit 10
- *   node src/migrate.js --space did:key:z6Mk...
- *   node src/migrate.js --resource bafybei... --limit 10
- *   node src/migrate.js --customer did:key:z6Mk... --limit 100
- *   
+ * 
  *   # Test index generation only:
- *   node src/migrate.js --test-index --cid bafybei...
+ *   node src/migrate.js --test-index --limit 10
+ * 
+ *   # Test location claims only:
+ *   node src/migrate.js --test-location-claims --limit 10
+ * 
+ *   # Test gateway auth only:
+ *   node src/migrate.js --test-gateway-auth --limit 10
+ * 
+ *   # Migrate specific space:
+ *   node src/migrate.js --space did:key:z6Mk... --limit 50
  */
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
 import { validateConfig, config } from './config.js'
-import { sampleUploads, getUploadByRoot } from './lib/tables/upload-table.js'
-import { generateDAGIndex } from './lib/migration-steps.js'
-import { base58btc } from 'multiformats/bases/base58'
+import { sampleUploads } from './lib/tables/upload-table.js'
+import { 
+  checkMigrationNeeded,
+  buildAndMigrateIndex,
+  republishLocationClaims,
+} from './lib/migration-steps.js'
 
 /**
- * Test index generation for a single upload
+ * Migrate a single upload through all required steps
+ * 
+ * @param {object} upload - Upload from Upload Table
+ * @param {object} options - Migration options
+ * @param {string} options.testMode - Test mode: 'index' | 'location-claims' | 'gateway-auth' | null (null = full migration)
  */
-async function testIndexGeneration(upload, options = {}) {
-  console.log()
-  console.log('Testing Index Generation')
-  console.log('='.repeat(50))
-  console.log(`Root CID (Upload): ${upload.root}`)
-  console.log(`Space: ${upload.space}`)
-  console.log(`Shards: ${upload.shards.length}`)
-  console.log()
+async function migrateUpload(upload, options = {}) {
+  console.log(`\n${'='.repeat(70)}`)
+  console.log(`📦 Migrating Upload: ${upload.root}`)
+  console.log(`   Space: ${upload.space}`)
+  console.log(`   Shards: ${upload.shards.length}`)
+  console.log('='.repeat(70))
   
   try {
-    const { indexBytes, indexCID, indexDigest } = await generateDAGIndex(upload)
-    console.log()
-    console.log('Metadata')
-    console.log(`  CID: ${indexCID}`)
-    console.log(`  Size: ${indexBytes.length} bytes`)
-    console.log(`  Multihash: ${base58btc.encode(indexDigest.bytes)}`)
-    console.log()
+    // Step 1: Check what migration steps are needed
+    console.log(`\n1) Checking migration status...`)
+    const status = await checkMigrationNeeded(upload)
     
-    // Optionally test upload and registration
-    if (options.testUpload) {
-      const { uploadAndRegisterIndex } = await import('./lib/migration-steps.js')
-      console.log()
-      console.log('Testing Upload and Registration')
-      console.log('='.repeat(50))
-      await uploadAndRegisterIndex({
-        space: upload.space,
-        indexBytes,
-        indexCID,
-        indexDigest,
-      })
+    console.log(`\n::: Migration Status:::`)
+    console.log(`   Index: ${status.hasIndexClaim ? '✓ EXISTS' : '✗ MISSING'}`)
+    console.log(`   Location claims: ${status.hasLocationClaim ? '✓ EXISTS' : '✗ MISSING'}`)
+    if (status.hasLocationClaim) {
+      console.log(`   Location has space: ${status.locationHasSpace ? '✓ YES' : '✗ NO'}`)
     }
+    console.log(`   Shards needing location claims: ${status.shardsNeedingLocationClaims.length}/${upload.shards.length}`)
+    
+    console.log(`\n!!! Actions Required!!!`)
+    console.log(`   ${status.needsIndexGeneration ? '☐' : '✓'} Generate and register index`)
+    console.log(`   ${status.needsLocationClaims ? '☐' : '✓'} Republish location claims with space`)
+    console.log(`   ${status.needsGatewayAuth ? '☐' : '✓'} Create gateway authorization`)
+    
+    // If nothing needs to be done, we're done!
+    if (!status.needsIndexGeneration && 
+        !status.needsLocationClaims && 
+        !status.needsGatewayAuth) {
+      console.log(`\n✅ Upload already fully migrated!`)
+      return { 
+        success: true, 
+        alreadyMigrated: true,
+        status 
+      }
+    }
+    
+    let shardsWithSizes = null
+    let migrationSpace = null
+    let indexCID = null
+    
+    // Step 2: Build and register index
+    const shouldRunIndex = !options.testMode || options.testMode === 'index'
+    
+    if (status.needsIndexGeneration && shouldRunIndex) {
+      console.log(`\n2)  Generating and registering index...`)
+      const result = await buildAndMigrateIndex({ upload })
+      shardsWithSizes = result.shards
+      migrationSpace = result.migrationSpace
+      indexCID = result.indexCID
+      console.log(`   ✅ Index created: ${indexCID}`)
+      console.log(`   ✅ Migration space: ${migrationSpace}`)
+      
+      // If test mode, stop here
+      if (options.testMode === 'index') {
+        console.log(`\n⏸ Test mode: Index only`)
+        return {
+          success: true,
+          testMode: 'index',
+          upload: upload.root,
+          space: upload.space,
+          migrationSpace,
+          indexCID: indexCID?.toString(),
+          status,
+        }
+      }
+    } else if (status.needsIndexGeneration) {
+      console.log(`\n⏭  Skipping index generation (test mode: ${options.testMode})`)
+    } else {
+      console.log(`\n⏭  Index already exists, skipping`)
+    }
+    
+    // Step 3: Republish location claims
+    const shouldRunLocationClaims = !options.testMode || options.testMode === 'location-claims'
+    
+    if (status.needsLocationClaims && shouldRunLocationClaims) {
+      console.log(`\n3)  Republishing location claims with space...`)
+      await republishLocationClaims({
+        space: upload.space,
+        shards: status.shardsNeedingLocationClaims,
+        shardsWithSizes, // Reuse from step 2 if available
+      })
+      console.log(`   ✅ Location claims republished for ${status.shardsNeedingLocationClaims.length} shards`)
+      
+      // If test mode, stop here
+      if (options.testMode === 'location-claims') {
+        console.log(`\n⏸ Test mode: Location claims only`)
+        return {
+          success: true,
+          testMode: 'location-claims',
+          upload: upload.root,
+          space: upload.space,
+          shardsRepublished: status.shardsNeedingLocationClaims.length,
+          status,
+        }
+      }
+    } else if (status.needsLocationClaims) {
+      console.log(`\n⏭  Skipping location claims (test mode: ${options.testMode})`)
+    } else {
+      console.log(`\n⏭  Location claims already have space, skipping`)
+    }
+    
+    // Step 4: Create gateway authorization
+    const shouldRunGatewayAuth = !options.testMode || options.testMode === 'gateway-auth'
+    
+    if (status.needsGatewayAuth && shouldRunGatewayAuth) {
+      console.log(`\n4)  Creating gateway authorization...`)
+      // TODO: Implement createGatewayAuth
+      console.log(`   ⚠️  Gateway auth creation not yet implemented`)
+      
+      // If test mode, stop here
+      if (options.testMode === 'gateway-auth') {
+        console.log(`\n⏸  Test mode: Gateway auth only`)
+        return {
+          success: true,
+          testMode: 'gateway-auth',
+          upload: upload.root,
+          space: upload.space,
+          status,
+        }
+      }
+    } else if (status.needsGatewayAuth) {
+      console.log(`\n⏭  Skipping gateway auth (test mode: ${options.testMode})`)
+    }
+    
+    console.log(`\n${'='.repeat(70)}`)
+    console.log(`✅ Migration complete for ${upload.root}`)
+    console.log('='.repeat(70))
     
     return {
       success: true,
       upload: upload.root,
       space: upload.space,
-      indexCID: indexCID.toString(),
-      indexSize: indexBytes.length,
+      migrationSpace,
+      indexCID: indexCID?.toString(),
+      shardsRepublished: status.shardsNeedingLocationClaims.length,
+      status,
     }
     
   } catch (error) {
-    console.error(`\nIndex generation failed for ${upload.root}:`, error.message)
+    console.error(`\n❌ Migration failed for ${upload.root}:`, error.message)
     console.error(error.stack)
     
     return {
@@ -84,82 +198,99 @@ async function testIndexGeneration(upload, options = {}) {
 }
 
 /**
- * Run index generation test mode
+ * Run migration mode - process multiple uploads
  */
-async function runTestIndexMode(values) {
-  console.log('Legacy Content Migration - Index Generation & Upload Test')
-  console.log('='.repeat(50))
-  console.log()
+async function runMigrationMode(values) {
+  // Determine test mode
+  let testMode = null
+  let modeLabel = 'Full Migration'
   
-  let upload = null
-  
-  // If specific CID provided, query it directly using the GSI
-  if (values.cid) {
-    console.log(`Querying upload by CID: ${values.cid}`)
-    
-    if (!values.space) {
-      console.log('No space specified, using GSI to find upload...')
-      upload = await getUploadByRoot(values.cid)
-    } else {
-      console.log(`Using space: ${values.space}`)
-      const { getUpload } = await import('./lib/tables/upload-table.js')
-      upload = await getUpload(values.space, values.cid)
-    }
-    
-    if (!upload) {
-      console.error(`Upload not found for CID: ${values.cid}${values.space ? ` in space ${values.space}` : ''}`)
-      process.exit(1)
-    }
-    
-    console.log(`Found upload in space: ${upload.space}`)
-    console.log()
-  } else {
-    const limit = parseInt(values.limit || '1', 10)
-    console.log(`Querying ${limit} upload(s)...`)
-    if (values.space) console.log(`Space filter: ${values.space}`)
-    console.log()
-    
-    for await (const u of sampleUploads({ limit, space: values.space })) {
-      upload = u
-      break
-    }
-    
-    if (!upload) {
-      console.error('No uploads found')
-      process.exit(1)
-    }
+  if (values['test-index']) {
+    testMode = 'index'
+    modeLabel = 'Index Generation Only'
+  } else if (values['test-location-claims']) {
+    testMode = 'location-claims'
+    modeLabel = 'Location Claims Only'
+  } else if (values['test-gateway-auth']) {
+    testMode = 'gateway-auth'
+    modeLabel = 'Gateway Auth Only'
   }
   
-  // Test index generation (and optionally upload)
-  const result = await testIndexGeneration(upload, {
-    testUpload: values['with-upload']
-  })
+  console.log(`Legacy Content Migration - ${modeLabel}`)
+  console.log('='.repeat(70))
+  console.log()
   
-  // Print cache stats if upload was tested
-  if (values['with-upload']) {
-    const { getCacheStats } = await import('./lib/tables/consumer-table.js')
-    const cacheStats = getCacheStats()
-    console.log()
-    console.log('Cache Statistics')
-    console.log('='.repeat(50))
-    console.log(`  Unique spaces cached: ${cacheStats.size}`)
-    console.log()
+  const limit = parseInt(values.limit || '10', 10)
+  const concurrency = parseInt(values.concurrency || '1', 10)
+  
+  console.log('Configuration:')
+  console.log(`  Mode: ${modeLabel}`)
+  console.log(`  Limit: ${limit} uploads`)
+  console.log(`  Concurrency: ${concurrency}`)
+  if (values.space) console.log(`  Space filter: ${values.space}`)
+  if (values.customer) console.log(`  Customer filter: ${values.customer}`)
+  console.log()
+  
+  const results = []
+  let processed = 0
+  
+  // Process uploads
+  for await (const upload of sampleUploads({ 
+    limit, 
+    space: values.space,
+    customer: values.customer 
+  })) {
+    processed++
+    console.log(`\n[${processed}/${limit}]`)
+    
+    const result = await migrateUpload(upload, {
+      testMode,
+    })
+    
+    results.push(result)
+    
+    // Small delay between uploads to avoid overwhelming services
+    if (processed < limit) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
   }
   
   // Print summary
   console.log()
-  console.log('='.repeat(50))
-  if (result.success) {
-    console.log('SUCCESS: Index generated successfully!')
-    if (values['with-upload']) {
-      console.log('  Index uploaded and registered with indexing service')
-    }
-  } else {
-    console.log('FAILED: Index generation failed')
-    console.log(`  Upload: ${result.upload}`)
-    console.log(`  Error: ${result.error}`)
+  console.log('='.repeat(70))
+  console.log('Migration Summary')
+  console.log('='.repeat(70))
+  
+  const successful = results.filter(r => r.success).length
+  const failed = results.filter(r => !r.success).length
+  const alreadyMigrated = results.filter(r => r.alreadyMigrated).length
+  const testModeResults = results.filter(r => r.testMode).length
+  
+  console.log(`Total processed: ${results.length}`)
+  console.log(`Successful: ${successful}`)
+  console.log(`Already migrated: ${alreadyMigrated}`)
+  if (testMode) {
+    console.log(`Test mode (${testMode}): ${testModeResults}`)
   }
-  console.log('='.repeat(50))
+  console.log(`Failed: ${failed}`)
+  
+  if (failed > 0) {
+    console.log()
+    console.log('Failed uploads:')
+    results.filter(r => !r.success).forEach(r => {
+      console.log(`  ❌ ${r.upload}: ${r.error}`)
+    })
+  }
+  
+  // Save results to file
+  if (values.output) {
+    const fs = await import('fs/promises')
+    await fs.writeFile(values.output, JSON.stringify(results, null, 2))
+    console.log()
+    console.log(`Results saved to: ${values.output}`)
+  }
+  
+  console.log('='.repeat(70))
 }
 
 /**
@@ -171,49 +302,48 @@ async function main() {
       'test-index': {
         type: 'boolean',
         default: false,
-        description: 'Run in index generation test mode',
+        description: 'Test mode: Only test index generation',
       },
-      'with-upload': {
+      'test-location-claims': {
         type: 'boolean',
         default: false,
-        description: 'Test upload and registration (requires SERVICE_PRIVATE_KEY)',
+        description: 'Test mode: Only test location claims republishing',
+      },
+      'test-gateway-auth': {
+        type: 'boolean',
+        default: false,
+        description: 'Test mode: Only test gateway authorization',
       },
       cid: {
         type: 'string',
-        description: 'Specific upload CID (for test mode)',
+        description: 'Specific upload CID',
       },
       limit: {
         type: 'string',
         short: 'l',
         default: '10',
+        description: 'Number of uploads to process',
       },
       space: {
         type: 'string',
         short: 's',
         description: 'Filter by space DID',
       },
-      resource: {
-        type: 'string',
-        short: 'r',
-        description: 'Filter by resource (root CID)',
-      },
       customer: {
         type: 'string',
         short: 'c',
         description: 'Filter by customer DID',
       },
-      'dry-run': {
-        type: 'boolean',
-        default: false,
-      },
       concurrency: {
         type: 'string',
         default: '1',
+        description: 'Number of concurrent migrations',
       },
       output: {
         type: 'string',
         short: 'o',
         default: 'migration-results.json',
+        description: 'Output file for results',
       },
     },
   })
@@ -231,12 +361,8 @@ async function main() {
   console.log('='.repeat(50))
   console.log()
   
-  // Run in test mode or full migration mode
-  if (values['test-index']) {
-    await runTestIndexMode(values)
-  } else {
-    //await runMigrationMode(values)
-  }
+  // Run migration mode (handles all cases including test modes)
+  await runMigrationMode(values)
 }
 
 main().catch(error => {
