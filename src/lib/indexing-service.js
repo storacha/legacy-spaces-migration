@@ -5,7 +5,7 @@ import { Client } from '@storacha/indexing-service-client'
 import * as Digest from 'multiformats/hashes/digest'
 import { CID } from 'multiformats/cid'
 import { config } from '../config.js'
-
+q
 /**
  * Create indexing service client
  */

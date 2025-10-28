@@ -14,6 +14,8 @@ const ENVIRONMENTS = {
     indexingService: 'https://indexer.storacha.network',
     contentClaims: 'https://claims.web3.storage',
     uploadService: 'https://up.storacha.network',
+    gatewayService: 'https://gateway.storacha.network',
+    gatewayDID: 'did:web:w3s.link',
   },
   staging: {
     region: 'us-east-2',
@@ -23,6 +25,8 @@ const ENVIRONMENTS = {
     indexingService: 'https://staging.indexer.storacha.network',
     contentClaims: 'https://staging.claims.web3.storage',
     uploadService: 'https://staging.up.storacha.network',
+    gatewayService: 'https://gateway.storacha.network',
+    gatewayDID: 'did:web:staging.w3s.link',
   },
 }
 
@@ -63,6 +67,11 @@ export const config = {
     indexingService: process.env.INDEXING_SERVICE_URL || env.indexingService,
     contentClaims: process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
     uploadService: process.env.UPLOAD_SERVICE_URL || env.uploadService,
+    gatewayService: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
+  },
+  
+  gateway: {
+    did: process.env.GATEWAY_DID || env.gatewayDID,
   },
   
   storage: {

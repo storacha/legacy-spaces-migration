@@ -8,7 +8,9 @@
  * 3. [x] Generate DAG indices (using index worker)
  * 4. [x] Upload and register indices
  * 5. [x] Republish location claims with space
- * 6. [ ] Create gateway authorizations
+ * 6. [x] Create gateway authorizations
+ * 7. [ ] Check if the upload is fully migrated 
+ *    - TODO
  * 
  * Usage Examples:
  * 
@@ -36,6 +38,7 @@ import {
   checkMigrationNeeded,
   buildAndMigrateIndex,
   republishLocationClaims,
+  createGatewayAuth,
 } from './lib/migration-steps.js'
 
 /**
@@ -152,8 +155,10 @@ async function migrateUpload(upload, options = {}) {
     
     if (status.needsGatewayAuth && shouldRunGatewayAuth) {
       console.log(`\n4)  Creating gateway authorization...`)
-      // TODO: Implement createGatewayAuth
-      console.log(`   ⚠️  Gateway auth creation not yet implemented`)
+      await createGatewayAuth({
+        space: upload.space,
+      })
+      console.log(`   ✅ Gateway authorization created (or already exists)`)
       
       // If test mode, stop here
       if (options.testMode === 'gateway-auth') {
@@ -168,6 +173,8 @@ async function migrateUpload(upload, options = {}) {
       }
     } else if (status.needsGatewayAuth) {
       console.log(`\n⏭  Skipping gateway auth (test mode: ${options.testMode})`)
+    } else {
+      console.log(`\n⏭  Gateway authorization already exists, skipping`)
     }
     
     console.log(`\n${'='.repeat(70)}`)
