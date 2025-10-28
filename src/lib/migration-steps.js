@@ -13,7 +13,11 @@ import * as Signer from '@ucanto/principal/ed25519'
 import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
 import * as HTTP from '@ucanto/transport/http'
+import { Absentee } from '@ucanto/principal'
+import * as UCAN from '@storacha/capabilities/ucan'
 import { Assert } from '@web3-storage/content-claims/capability'
+import { Access, Space as SpaceCapabilities } from '@storacha/capabilities'
+import * as DID from '@ipld/dag-ucan/did'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import * as Digest from 'multiformats/hashes/digest'
@@ -310,20 +314,90 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
 /**
  * Create gateway authorization delegation for the space
  * 
+ * Creates a `space/content/serve/*` delegation for legacy spaces that don't have
+ * existing gateway authorizations. Uses the Absentee issuer pattern since we don't
+ * have the space's private key.
+ * 
+ * The delegation is published to the gateway's KV store via `access/delegate` invocation.
+ * The gateway will use this delegation to authorize content serving requests.
+ * 
+ * **Idempotency Note**: Calling this multiple times for the same space will create
+ * multiple delegations in the KV store with different CIDs. The KV store key is
+ * `${space}:${delegation.cid}`, so each invocation creates a new entry. This is safe
+ * but not optimal. In a future iteration, we could check existing delegations via
+ * the KV store API before creating new ones.
+ * 
  * @param {object} params
  * @param {string} params.space - Space DID
- * @param {string} params.root - Root CID
- * @param {object} params.uploadClient - Upload client with credentials
  * @returns {Promise<void>}
  */
-export async function createGatewayAuth({ space, root, uploadClient }) {
+export async function createGatewayAuth({ space }) {
   console.log(`  Creating gateway authorization...`)
+  console.log(`    Space: ${space}`)
   
-  // TODO: Implement gateway authorization
-  // This requires:
-  // 1. Create space/content/serve/* delegation
-  // 2. Service attests the delegation using ucan/attest
-  // 3. Store the delegation for gateway to use
+  if (!config.credentials.servicePrivateKey) {
+    throw new Error('SERVICE_PRIVATE_KEY not configured')
+  }
+
+  // Setup service signer and gateway connection
+  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
+  const gatewayServiceURL = new URL(config.services.gatewayService)
+  const gatewayConnection = connect({
+    id: serviceSigner,
+    codec: CAR.outbound,
+    channel: HTTP.open({ url: gatewayServiceURL })
+  })
   
-  console.log(`    TODO: Implement gateway authorization`)
+  // Parse gateway DID
+  const gatewayPrincipal = DID.parse(config.gateway.did)
+  console.log(`    Gateway: ${gatewayPrincipal}`)
+
+  try {
+    // Create delegation with Absentee issuer (space doesn't have private key)
+    // This grants the gateway the ability to serve content from this space
+    const delegation = await SpaceCapabilities.contentServe.delegate({
+      issuer: Absentee.from({ id: space }),
+      audience: gatewayPrincipal,
+      with: space,
+      nb: {},  // No additional caveats - allows serving all content
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Delegation created: ${delegation.cid}`)
+
+    // Service attests the delegation (proves service authorized this)
+    const attestation = await UCAN.attest.delegate({
+      issuer: serviceSigner,
+      audience: serviceSigner,
+      with: serviceSigner.did(),
+      nb: { proof: delegation.cid },
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Attestation created: ${attestation.cid}`)
+
+    // Publish to gateway via access/delegate
+    const result = await Access.delegate.invoke({
+      issuer: serviceSigner,
+      audience: gatewayPrincipal,
+      with: space,
+      nb: {
+        delegations: {
+          [delegation.cid.toString()]: delegation.cid,
+        },
+      },
+      proofs: [delegation, attestation],
+    }).execute(gatewayConnection)
+
+    if (result.out.error) {
+      throw new Error(
+        `Failed to publish gateway delegation: ${result.out.error.message}`
+      )
+    }
+    
+    console.log(`    ✓ Gateway authorization published successfully`)
+  } catch (error) {
+    // Log error but don't fail the migration - gateway auth can be retried independently
+    console.error(`    ✗ Failed to create gateway authorization: ${error.message}`)
+    console.error(`    This can be retried independently without affecting other migration steps`)
+    // Don't throw - allow migration to continue
+  }
 }
