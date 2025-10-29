@@ -9,8 +9,7 @@
  * 4. [x] Upload and register indices
  * 5. [x] Republish location claims with space
  * 6. [x] Create gateway authorizations
- * 7. [ ] Check if the upload is fully migrated 
- *    - TODO
+ * 7. [x] Verify migration completed successfully
  * 
  * Usage Examples:
  * 
@@ -26,6 +25,11 @@
  *   # Test gateway auth only:
  *   node src/migrate.js --test-gateway-auth --limit 10
  * 
+ *   # Verify migration only (no changes):
+ *   node src/migrate.js --verify-only --limit 10
+ *   node src/migrate.js --verify-only --space did:key:z6Mk...
+ *   node src/migrate.js --verify-only --customer did:mailto:...
+ * 
  *   # Migrate specific space:
  *   node src/migrate.js --space did:key:z6Mk... --limit 50
  */
@@ -40,6 +44,7 @@ import {
   republishLocationClaims,
   createGatewayAuth,
 } from './lib/migration-steps.js'
+import { verifyMigration } from './lib/migration-verify.js'
 
 /**
  * Migrate a single upload through all required steps
@@ -47,6 +52,7 @@ import {
  * @param {object} upload - Upload from Upload Table
  * @param {object} options - Migration options
  * @param {string} options.testMode - Test mode: 'index' | 'location-claims' | 'gateway-auth' | null (null = full migration)
+ * @param {boolean} options.verifyOnly - If true, only verify migration status without making changes
  */
 async function migrateUpload(upload, options = {}) {
   console.log(`\n${'='.repeat(70)}`)
@@ -56,6 +62,20 @@ async function migrateUpload(upload, options = {}) {
   console.log('='.repeat(70))
   
   try {
+    // If verify-only mode, skip to verification
+    if (options.verifyOnly) {
+      console.log(`\n>>> Verify-Only Mode: Checking migration status...`)
+      const verificationResult = await verifyMigration({ upload })
+      
+      return {
+        success: verificationResult.success,
+        verifyOnly: true,
+        upload: upload.root,
+        space: upload.space,
+        verification: verificationResult,
+      }
+    }
+    
     // Step 1: Check what migration steps are needed
     console.log(`\n1) Checking migration status...`)
     const status = await checkMigrationNeeded(upload)
@@ -177,18 +197,28 @@ async function migrateUpload(upload, options = {}) {
       console.log(`\n⏭  Gateway authorization already exists, skipping`)
     }
     
+    // Step 5: Verify migration completed successfully
+    console.log(`\n5) Verifying migration...`)
+    const verificationResult = await verifyMigration({ upload })
+    
+    if (!verificationResult.success) {
+      console.error(`\n⚠️  Verification failed: ${verificationResult.details}`)
+      console.error(`   Migration may need to be retried`)
+    }
+    
     console.log(`\n${'='.repeat(70)}`)
-    console.log(`✅ Migration complete for ${upload.root}`)
+    console.log(`${verificationResult.success ? '✅' : '⚠️'}  Migration ${verificationResult.success ? 'complete' : 'completed with issues'} for ${upload.root}`)
     console.log('='.repeat(70))
     
     return {
-      success: true,
+      success: verificationResult.success,
       upload: upload.root,
       space: upload.space,
       migrationSpace,
       indexCID: indexCID?.toString(),
       shardsRepublished: status.shardsNeedingLocationClaims.length,
       status,
+      verification: verificationResult,
     }
     
   } catch (error) {
@@ -211,8 +241,11 @@ async function runMigrationMode(values) {
   // Determine test mode
   let testMode = null
   let modeLabel = 'Full Migration'
+  const verifyOnly = values['verify-only'] || false
   
-  if (values['test-index']) {
+  if (verifyOnly) {
+    modeLabel = 'Verification Only'
+  } else if (values['test-index']) {
     testMode = 'index'
     modeLabel = 'Index Generation Only'
   } else if (values['test-location-claims']) {
@@ -252,6 +285,7 @@ async function runMigrationMode(values) {
     
     const result = await migrateUpload(upload, {
       testMode,
+      verifyOnly,
     })
     
     results.push(result)
@@ -272,11 +306,16 @@ async function runMigrationMode(values) {
   const failed = results.filter(r => !r.success).length
   const alreadyMigrated = results.filter(r => r.alreadyMigrated).length
   const testModeResults = results.filter(r => r.testMode).length
+  const verifyOnlyResults = results.filter(r => r.verifyOnly).length
   
   console.log(`Total processed: ${results.length}`)
   console.log(`Successful: ${successful}`)
   console.log(`Already migrated: ${alreadyMigrated}`)
-  if (testMode) {
+  if (verifyOnly) {
+    console.log(`Verified: ${verifyOnlyResults}`)
+    console.log(`Verification passed: ${results.filter(r => r.verifyOnly && r.success).length}`)
+    console.log(`Verification failed: ${results.filter(r => r.verifyOnly && !r.success).length}`)
+  } else if (testMode) {
     console.log(`Test mode (${testMode}): ${testModeResults}`)
   }
   console.log(`Failed: ${failed}`)
@@ -320,6 +359,11 @@ async function main() {
         type: 'boolean',
         default: false,
         description: 'Test mode: Only test gateway authorization',
+      },
+      'verify-only': {
+        type: 'boolean',
+        default: false,
+        description: 'Verify migration status without making changes',
       },
       cid: {
         type: 'string',
