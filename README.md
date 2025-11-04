@@ -8,7 +8,9 @@ Migration tooling to move legacy content from old indexing systems to the modern
 2. ✅ **Build sharded DAG indices** where needed (using Index Worker)
 3. ✅ **Upload and register indices** to migration spaces via space/blob/add and assert/index
 4. ✅ **Republish location claims** with space information for egress tracking
-5. ⏳ **Create gateway delegations** for content serving (TODO)
+5. ✅ **Create gateway delegations** for content serving
+6. ✅ **Migration Data Analysis** to understand the worklaod
+7. ✅ **Migration State Management & Monitoring** to retry, resume and watch the migration process
 
 ## Setup
 
