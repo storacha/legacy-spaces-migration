@@ -61,6 +61,7 @@ export const config = {
     subscription: process.env.SUBSCRIPTION_TABLE_NAME || `${env.tablePrefix}-subscription`, // Billing subscriptions (customer -> provider relationship)
     delegation: process.env.DELEGATION_TABLE_NAME || `${env.tablePrefix}-delegation`, // Delegation storage
     migrationSpaces: process.env.MIGRATION_SPACES_TABLE_NAME || `${process.env.STORACHA_ENV || 'prod'}-migration-spaces`, // Migration space tracking
+    migrationProgress: process.env.MIGRATION_PROGRESS_TABLE_NAME || `${process.env.STORACHA_ENV === 'staging' ? 'staging' : 'prod'}-migration-progress`, // Migration progress tracking
   },
   
   services: {
