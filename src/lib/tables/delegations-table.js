@@ -4,37 +4,33 @@
  * Stores delegations in DynamoDB for indexing and S3/R2 for content.
  * Simplified version for migration - only supports putMany for now.
  */
-import { DynamoDBClient, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb'
+import { BatchWriteCommand } from '@aws-sdk/lib-dynamodb'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
-import { marshall } from '@aws-sdk/util-dynamodb'
 import { base32 } from 'multiformats/bases/base32'
 import { delegationsToBytes } from '@storacha/access/encoding'
 import { config } from '../../config.js'
+import { getDynamoClient } from '../dynamo-client.js'
 
 /**
- * Create DynamoDB client
+ * Cached S3 client
  */
-function createDynamoClient() {
-  return new DynamoDBClient({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
-}
+let cachedS3Client = null
 
 /**
- * Create S3 client for delegation bucket
+ * Get or create S3 client for delegation bucket
+ * Caches the client to avoid creating multiple connections
  */
-function createS3Client() {
-  return new S3Client({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
+function getS3Client() {
+  if (!cachedS3Client) {
+    cachedS3Client = new S3Client({
+      region: config.aws.region,
+      credentials: config.aws.accessKeyId ? {
+        accessKeyId: config.aws.accessKeyId,
+        secretAccessKey: config.aws.secretAccessKey,
+      } : undefined,
+    })
+  }
+  return cachedS3Client
 }
 
 /**
@@ -65,8 +61,8 @@ export async function storeDelegations(delegations, options = {}) {
     return
   }
 
-  const dynamoClient = createDynamoClient()
-  const s3Client = createS3Client()
+  const dynamoClient = getDynamoClient()
+  const s3Client = getS3Client()
 
   // Store delegation CAR bytes in S3/R2 (matching w3infra format)
   // Each delegation is encoded as a CAR file containing just that delegation
@@ -86,17 +82,17 @@ export async function storeDelegations(delegations, options = {}) {
   }))
 
   // Index delegations in DynamoDB
-  const batchWrite = new BatchWriteItemCommand({
+  const batchWrite = new BatchWriteCommand({
     RequestItems: {
       [config.tables.delegation]: delegations.map(d => ({
         PutRequest: {
-          Item: marshall({
+          Item: {
             link: d.cid.toString(),
             audience: d.audience.did(),
             issuer: d.issuer.did(),
             expiration: d.expiration === Infinity ? null : d.expiration,
             cause: options.cause?.toString(), // CID of space/index/add invocation
-          }, { removeUndefinedValues: true })
+          }
         }
       }))
     }

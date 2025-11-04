@@ -1,23 +1,10 @@
 /**
  * Query Consumer Table to get space ownership (space -> customer mapping)
  */
-import { DynamoDBClient, QueryCommand, PutItemCommand, GetItemCommand } from '@aws-sdk/client-dynamodb'
-import { unmarshall, marshall } from '@aws-sdk/util-dynamodb'
+import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb'
 import { CBOR } from '@ucanto/core'
 import { config } from '../../config.js'
-
-/**
- * Create DynamoDB client
- */
-export function createDynamoClient() {
-  return new DynamoDBClient({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
-}
+import { getDynamoClient } from '../dynamo-client.js'
 
 // Cache for space -> customer lookups
 // Reset per migration run (not persistent across restarts)
@@ -36,18 +23,16 @@ export async function getCustomerForSpace(space) {
   }
   
   // Query DynamoDB
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
-  const command = new GetItemCommand({
+  const command = new GetCommand({
     TableName: config.tables.consumer,
-    Key: marshall({ consumer: space }),
+    Key: { consumer: space },
   })
   
   const response = await client.send(command)
   
-  const customer = response.Items && response.Items.length > 0
-    ? unmarshall(response.Items[0]).customer || null
-    : null
+  const customer = response.Item?.customer || null
   
   // Cache the result (even if null to avoid repeated failed lookups)
   customerCache.set(space, customer)
@@ -102,7 +87,7 @@ async function createProvisionSubscriptionId(space) {
  * @returns {Promise<void>}
  */
 export async function provisionSpace(customer, space, provider) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
   const providerDID = provider || config.credentials.serviceDID
   const now = new Date().toISOString()
@@ -111,14 +96,14 @@ export async function provisionSpace(customer, space, provider) {
   const subscription = await createProvisionSubscriptionId(space)
   
   // Step 1: Create subscription record (idempotent)
-  const subscriptionCommand = new PutItemCommand({
+  const subscriptionCommand = new PutCommand({
     TableName: config.tables.subscription,
-    Item: marshall({
+    Item: {
       subscription,           // Subscription ID (partition key)
       provider: providerDID,  // Provider DID (sort key)
       customer,               // Customer account DID
       insertedAt: now,
-    }),
+    },
     // Don't overwrite if already exists (idempotent)
     ConditionExpression: 'attribute_not_exists(subscription) AND attribute_not_exists(provider)',
   })
@@ -136,15 +121,15 @@ export async function provisionSpace(customer, space, provider) {
   }
   
   // Step 2: Create consumer record (links space to subscription)
-  const consumerCommand = new PutItemCommand({
+  const consumerCommand = new PutCommand({
     TableName: config.tables.consumer,
-    Item: marshall({
+    Item: {
       subscription,           // Subscription ID (partition key)
       provider: providerDID,  // Provider DID (sort key)
       consumer: space,        // Space DID (indexed via GSI)
       customer,               // Customer account DID
       insertedAt: now,
-    }),
+    },
     // Don't overwrite if already exists (idempotent)
     ConditionExpression: 'attribute_not_exists(subscription) AND attribute_not_exists(provider)',
   })

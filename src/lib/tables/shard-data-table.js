@@ -5,24 +5,11 @@
  * We are still writing to the blob-registry and allocations tables.
  * So we can query either table to get the size, but the majority of the data is in allocations.
  */
-import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb'
-import { unmarshall } from '@aws-sdk/util-dynamodb'
+import { QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import { config } from '../../config.js'
-
-/**
- * Create DynamoDB client
- */
-export function createDynamoClient() {
-  return new DynamoDBClient({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
-}
+import { getDynamoClient } from '../dynamo-client.js'
 
 /**
  * Query allocations table to get shard size
@@ -37,7 +24,7 @@ export function createDynamoClient() {
  * @returns {Promise<number>} - Blob size in bytes
  */
 export async function getShardSize(space, shardCID) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
   // Parse the CAR CID to get its multihash
   const cid = CID.parse(shardCID)
@@ -53,15 +40,15 @@ export async function getShardSize(space, shardCID) {
       '#space': 'space',
     },
     ExpressionAttributeValues: {
-      ':space': { S: space },
-      ':multihash': { S: digest },
+      ':space': space,
+      ':multihash': digest,
     },
   })
   
   const allocationsResponse = await client.send(allocationsCommand)
   
   if (allocationsResponse.Items && allocationsResponse.Items.length > 0) {
-    const blob = unmarshall(allocationsResponse.Items[0])
+    const blob = allocationsResponse.Items[0]
     return parseInt(blob.size, 10)
   }
   
@@ -74,14 +61,14 @@ export async function getShardSize(space, shardCID) {
       '#space': 'space',
     },
     ExpressionAttributeValues: {
-      ':space': { S: space },
-      ':link': { S: shardCID },
+      ':space': space,
+      ':link': shardCID,
     },
   })
   
   const storeResponse = await client.send(storeCommand)
   if (storeResponse.Items && storeResponse.Items.length > 0) {
-    const blob = unmarshall(storeResponse.Items[0])
+    const blob = storeResponse.Items[0]
     return parseInt(blob.size, 10)
   }
   
