@@ -26,10 +26,9 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { DynamoDBClient, ScanCommand, QueryCommand } from '@aws-sdk/client-dynamodb'
-import { unmarshall } from '@aws-sdk/util-dynamodb'
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { DynamoDBDocumentClient, ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { validateConfig, config } from './config.js'
-import { createDynamoClient } from './lib/tables/upload-table.js'
 import fs from 'fs/promises'
 import path from 'path'
 
@@ -43,7 +42,10 @@ const DISTRIBUTION_DIR = 'migration-state'
  * @returns {Promise<Map>} Map of customer -> Set of spaces
  */
 async function scanConsumerSegment(segment, totalSegments) {
-  const client = createDynamoClient()
+  const baseClient = new DynamoDBClient({
+    region: config.aws.region,
+  })
+  const client = DynamoDBDocumentClient.from(baseClient)
   const customerSpacesMap = new Map() // customer -> Set(spaces)
   
   let scanned = 0
@@ -68,8 +70,7 @@ async function scanConsumerSegment(segment, totalSegments) {
       break
     }
     
-    for (const item of response.Items) {
-      const record = unmarshall(item)
+    for (const record of response.Items) {
       if (record.consumer && record.customer) {
         if (!customerSpacesMap.has(record.customer)) {
           customerSpacesMap.set(record.customer, new Set())
@@ -128,7 +129,7 @@ async function countUploadsForSpace(client, space) {
       '#space': 'space',
     },
     ExpressionAttributeValues: {
-      ':space': { S: space },
+      ':space': space,
     },
     Select: 'COUNT',
     Limit: 1, // Just check if space has any uploads
@@ -153,7 +154,7 @@ async function countUploadsForSpace(client, space) {
         '#space': 'space',
       },
       ExpressionAttributeValues: {
-        ':space': { S: space },
+        ':space': space,
       },
       Select: 'COUNT',
       ExclusiveStartKey: lastEvaluatedKey,
@@ -237,8 +238,11 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
   let processedCustomers = 0
   let totalSpacesProcessed = 0
   
-  // Create a shared DynamoDB client for reuse
-  const client = createDynamoClient()
+  // Create a shared DynamoDB Document Client for reuse
+  const baseClient = new DynamoDBClient({
+    region: config.aws.region,
+  })
+  const client = DynamoDBDocumentClient.from(baseClient)
   
   const countStartTime = Date.now()
   

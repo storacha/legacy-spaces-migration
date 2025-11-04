@@ -32,16 +32,25 @@ import {
 } from '@aws-sdk/lib-dynamodb'
 import { config } from '../../config.js'
 
-const PROGRESS_TABLE = 'migration-progress'
+const PROGRESS_TABLE = config.tables.migrationProgress
 
 /**
- * Create DynamoDB client
+ * Cached DynamoDB Document Client
  */
-export function createDynamoClient() {
-  const client = new DynamoDBClient({
-    region: config.AWS_REGION,
-  })
-  return DynamoDBDocumentClient.from(client)
+let cachedClient = null
+
+/**
+ * Get or create DynamoDB Document Client
+ * Caches the client to avoid creating multiple connections
+ */
+function getClient() {
+  if (!cachedClient) {
+    const client = new DynamoDBClient({
+      region: config.aws.region,
+    })
+    cachedClient = DynamoDBDocumentClient.from(client)
+  }
+  return cachedClient
 }
 
 /**
@@ -52,7 +61,7 @@ export function createDynamoClient() {
  * @returns {Promise<object | null>}
  */
 export async function getSpaceProgress(customer, space) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new GetCommand({
     TableName: PROGRESS_TABLE,
@@ -75,7 +84,7 @@ export async function getSpaceProgress(customer, space) {
  * @returns {Promise<void>}
  */
 export async function createSpaceProgress({ customer, space, totalUploads, instanceId, workerId }) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const now = new Date().toISOString()
   
@@ -117,7 +126,7 @@ export async function createSpaceProgress({ customer, space, totalUploads, insta
  * @returns {Promise<void>}
  */
 export async function updateSpaceProgress({ customer, space, completedUploads, lastProcessedUpload }) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const updateExpression = lastProcessedUpload
     ? 'SET completedUploads = :completed, lastProcessedUpload = :lastUpload, updatedAt = :now'
@@ -150,7 +159,7 @@ export async function updateSpaceProgress({ customer, space, completedUploads, l
  * @returns {Promise<void>}
  */
 export async function markSpaceCompleted(customer, space) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new UpdateCommand({
     TableName: PROGRESS_TABLE,
@@ -177,7 +186,7 @@ export async function markSpaceCompleted(customer, space) {
  * @returns {Promise<void>}
  */
 export async function markSpaceFailed(customer, space, error) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new UpdateCommand({
     TableName: PROGRESS_TABLE,
@@ -204,7 +213,7 @@ export async function markSpaceFailed(customer, space, error) {
  * @returns {Promise<Array<object>>}
  */
 export async function getCustomerSpaces(customer) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new QueryCommand({
     TableName: PROGRESS_TABLE,
@@ -224,7 +233,7 @@ export async function getCustomerSpaces(customer) {
  * @returns {Promise<Array<object>>}
  */
 export async function getFailedMigrations() {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new ScanCommand({
     TableName: PROGRESS_TABLE,
@@ -247,7 +256,7 @@ export async function getFailedMigrations() {
  * @returns {Promise<Array<object>>}
  */
 export async function getStuckMigrations() {
-  const client = createDynamoClient()
+  const client = getClient()
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
   
   const command = new ScanCommand({
@@ -273,7 +282,7 @@ export async function getStuckMigrations() {
  * @returns {Promise<Array<object>>}
  */
 export async function getInstanceSpaces(instanceId) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new ScanCommand({
     TableName: PROGRESS_TABLE,
@@ -295,7 +304,7 @@ export async function getInstanceSpaces(instanceId) {
  * @returns {Promise<{items: Array<object>, lastEvaluatedKey?: object}>}
  */
 export async function scanAllProgress(options = {}) {
-  const client = createDynamoClient()
+  const client = getClient()
   
   const command = new ScanCommand({
     TableName: PROGRESS_TABLE,

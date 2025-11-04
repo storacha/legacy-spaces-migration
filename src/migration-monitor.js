@@ -13,10 +13,11 @@
  *   node src/migration-monitor.js --watch                   # Live monitoring (refresh every 30s)
  */
 
+import dotenv from 'dotenv'
+dotenv.config()
 import { parseArgs } from 'node:util'
 import { validateConfig } from './config.js'
 import {
-  createDynamoClient,
   getSpaceProgress,
   getCustomerSpaces,
   getFailedMigrations,
@@ -93,15 +94,15 @@ function printOverallStats(stats) {
   
   const completionPct = stats.total > 0 ? ((stats.completed / stats.total) * 100).toFixed(1) : '0.0'
   const uploadPct = stats.totalUploads > 0 ? ((stats.completedUploads / stats.totalUploads) * 100).toFixed(1) : '0.0'
-  
+  // add a red X emoji here -> 
   console.log(`Total Spaces: ${stats.total.toLocaleString()}`)
-  console.log(`  ✓ Completed: ${stats.completed.toLocaleString()} (${completionPct}%)`)
-  console.log(`  ⏳ In Progress: ${stats.inProgress.toLocaleString()}`)
-  console.log(`  ⏸️  Pending: ${stats.pending.toLocaleString()}`)
-  console.log(`  ✗ Failed: ${stats.failed.toLocaleString()}`)
+  console.log(`  🟢 Completed: ${stats.completed.toLocaleString()} (${completionPct}%)`)
+  console.log(`  🔵 In Progress: ${stats.inProgress.toLocaleString()}`)
+  console.log(`  🟡 Pending: ${stats.pending.toLocaleString()}`)
+  console.log(`  🔴 Failed: ${stats.failed.toLocaleString()}`)
   console.log()
   console.log(`Total Uploads: ${stats.totalUploads.toLocaleString()}`)
-  console.log(`  ✓ Completed: ${stats.completedUploads.toLocaleString()} (${uploadPct}%)`)
+  console.log(`  🟢 Completed: ${stats.completedUploads.toLocaleString()} (${uploadPct}%)`)
   console.log()
   
   if (Object.keys(stats.byInstance).length > 0) {
@@ -147,19 +148,19 @@ function printCustomerProgress(customer, spaces) {
   const pending = spaces.filter(s => s.status === 'pending').length
   
   console.log(`Status:`)
-  console.log(`  ✓ Completed: ${completed}`)
-  console.log(`  ⏳ In Progress: ${inProgress}`)
-  console.log(`  ⏸️  Pending: ${pending}`)
-  console.log(`  ✗ Failed: ${failed}`)
+  console.log(`  🟢 Completed: ${completed}`)
+  console.log(`  🔵 In Progress: ${inProgress}`)
+  console.log(`  🟡 Pending: ${pending}`)
+  console.log(`  🔴 Failed: ${failed}`)
   console.log()
   
   console.log('Spaces:')
   console.log('-'.repeat(70))
   
   for (const space of spaces.slice(0, 20)) {
-    const statusIcon = space.status === 'completed' ? '✓' : 
-                       space.status === 'in-progress' ? '⏳' :
-                       space.status === 'failed' ? '✗' : '⏸️'
+    const statusIcon = space.status === 'completed' ? '🟢' : 
+                       space.status === 'in-progress' ? '🔵' :
+                       space.status === 'failed' ? '🔴' : '🟡'
     const uploadProgress = space.totalUploads > 0 ? 
       ` (${space.completedUploads}/${space.totalUploads} uploads)` : ''
     
@@ -194,9 +195,9 @@ function printSpaceStatus(space) {
     return
   }
   
-  const statusIcon = space.status === 'completed' ? '✓' : 
-                     space.status === 'in-progress' ? '⏳' :
-                     space.status === 'failed' ? '✗' : '⏸️'
+  const statusIcon = space.status === 'completed' ? '🟢' : 
+                     space.status === 'in-progress' ? '🔵' :
+                     space.status === 'failed' ? '🔴' : '🟡'
   
   console.log(`Space: ${space.space}`)
   console.log(`Customer: ${space.customer}`)
@@ -244,7 +245,7 @@ function printFailedMigrations(failed) {
   }
   
   for (const item of failed.slice(0, 20)) {
-    console.log(`✗ ${item.space}`)
+    console.log(`🔴 ${item.space}`)
     console.log(`  Customer: ${item.customer}`)
     console.log(`  Instance: ${item.instanceId}, Worker: ${item.workerId}`)
     console.log(`  Error: ${item.error || 'Unknown error'}`)
@@ -277,7 +278,7 @@ function printStuckMigrations(stuck) {
   
   for (const item of stuck.slice(0, 20)) {
     const stuckDuration = Math.floor((Date.now() - new Date(item.updatedAt).getTime()) / (60 * 1000))
-    console.log(`⏳ ${item.space}`)
+    console.log(`🔵 ${item.space}`)
     console.log(`  Customer: ${item.customer}`)
     console.log(`  Instance: ${item.instanceId}, Worker: ${item.workerId}`)
     console.log(`  Stuck for: ${stuckDuration} minutes`)
@@ -316,13 +317,13 @@ function printInstanceProgress(instanceId, spaces) {
   const completedUploads = spaces.reduce((sum, s) => sum + (s.completedUploads || 0), 0)
   
   console.log(`Total Spaces: ${spaces.length}`)
-  console.log(`  ✓ Completed: ${completed}`)
-  console.log(`  ⏳ In Progress: ${inProgress}`)
-  console.log(`  ⏸️  Pending: ${pending}`)
-  console.log(`  ✗ Failed: ${failed}`)
+  console.log(`  🟢 Completed: ${completed}`)
+  console.log(`  🔵 In Progress: ${inProgress}`)
+  console.log(`  🟡 Pending: ${pending}`)
+  console.log(`  🔴 Failed: ${failed}`)
   console.log()
   console.log(`Total Uploads: ${totalUploads.toLocaleString()}`)
-  console.log(`  ✓ Completed: ${completedUploads.toLocaleString()}`)
+  console.log(`  🟢 Completed: ${completedUploads.toLocaleString()}`)
   console.log()
   
   // Group by worker
