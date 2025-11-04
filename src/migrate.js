@@ -325,13 +325,43 @@ async function runMigrationMode(values) {
     console.log()
   }
   
-  // Import getCustomerForSpace to check upload ownership
-  const { getCustomerForSpace } = await import('./lib/tables/consumer-table.js')
-  
-  for await (const upload of sampleUploads({ 
-    limit: limit * 10, // Sample more to account for filtering
-    space: values.space,
-  })) {
+  // If --cid is provided, fetch and process that single upload
+  if (values.cid) {
+    console.log(`Fetching specific upload: ${values.cid}`)
+    if (values.space) {
+      console.log(`  Using space filter: ${values.space}`)
+    }
+    console.log()
+    
+    let upload
+    if (values.space) {
+      // If space is provided, use primary index for accurate data
+      const { getUpload } = await import('./lib/tables/upload-table.js')
+      upload = await getUpload(values.space, values.cid)
+    } else {
+      console.error(`❌ Space not provided`)
+      process.exit(1)
+    }
+    
+    if (!upload) {
+      console.error(`❌ Upload not found: ${values.cid}`)
+      process.exit(1)
+    }
+    
+    const result = await migrateUpload(upload, {
+      testMode,
+      verifyOnly,
+    })
+    
+    results.push(result)
+  } else {
+    // Import getCustomerForSpace to check upload ownership
+    const { getCustomerForSpace } = await import('./lib/tables/consumer-table.js')
+    
+    for await (const upload of sampleUploads({ 
+      limit: limit * 10, // Sample more to account for filtering
+      space: values.space,
+    })) {
     // If instance mode, check if upload belongs to one of our customers
     if (customerSet) {
       const customer = await getCustomerForSpace(upload.space)
@@ -354,8 +384,9 @@ async function runMigrationMode(values) {
       break
     }
     
-    // Small delay between uploads to avoid overwhelming services
-    await new Promise(resolve => setTimeout(resolve, 100))
+      // Small delay between uploads to avoid overwhelming services
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
   }
   
   // Print summary
