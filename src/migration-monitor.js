@@ -16,7 +16,7 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { validateConfig } from './config.js'
+import { validateConfig, config } from './config.js'
 import {
   getSpaceProgress,
   getCustomerSpaces,
@@ -90,6 +90,10 @@ function printOverallStats(stats) {
   console.log()
   console.log('Migration Progress Overview')
   console.log('='.repeat(70))
+  console.log()
+  console.log(`Environment: ${config.environment}`)
+  console.log(`Region: ${config.aws.region}`)
+  console.log(`Table: ${config.tables.migrationProgress}`)
   console.log()
   
   const completionPct = stats.total > 0 ? ((stats.completed / stats.total) * 100).toFixed(1) : '0.0'
