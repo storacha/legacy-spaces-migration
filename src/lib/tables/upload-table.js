@@ -1,22 +1,9 @@
 /**
  * Query Upload Table to get legacy uploads
  */
-import { DynamoDBClient, ScanCommand, QueryCommand } from '@aws-sdk/client-dynamodb'
-import { unmarshall } from '@aws-sdk/util-dynamodb'
+import { ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { config } from '../../config.js'
-
-/**
- * Create DynamoDB client
- */
-export function createDynamoClient() {
-  return new DynamoDBClient({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
-}
+import { getDynamoClient } from '../dynamo-client.js'
 
 /**
  * Sample uploads from the Upload Table
@@ -27,7 +14,7 @@ export function createDynamoClient() {
  * @returns {AsyncGenerator<{space: string, root: string, shards: string[], insertedAt: string}>}
  */
 export async function* sampleUploads({ limit, space }) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   let count = 0
   let lastEvaluatedKey
   
@@ -40,7 +27,7 @@ export async function* sampleUploads({ limit, space }) {
             '#space': 'space',
           },
           ExpressionAttributeValues: {
-            ':space': { S: space },
+            ':space': space,
           },
           Limit: Math.min(100, limit - count),
           ExclusiveStartKey: lastEvaluatedKey,
@@ -57,8 +44,7 @@ export async function* sampleUploads({ limit, space }) {
       break
     }
     
-    for (const item of response.Items) {
-      const upload = unmarshall(item)
+    for (const upload of response.Items) {
       yield {
         space: upload.space,
         root: upload.root,
@@ -88,7 +74,7 @@ export async function* sampleUploads({ limit, space }) {
  * @returns {Promise<{space: string, root: string, shards: string[]} | null>}
  */
 export async function getUpload(space, root) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
   const command = new QueryCommand({
     TableName: config.tables.upload,
@@ -98,8 +84,8 @@ export async function getUpload(space, root) {
       '#root': 'root',
     },
     ExpressionAttributeValues: {
-      ':space': { S: space },
-      ':root': { S: root },
+      ':space': space,
+      ':root': root,
     },
   })
   
@@ -109,7 +95,7 @@ export async function getUpload(space, root) {
     return null
   }
   
-  const upload = unmarshall(response.Items[0])
+  const upload = response.Items[0]
   return {
     space: upload.space,
     root: upload.root,
@@ -125,7 +111,7 @@ export async function getUpload(space, root) {
  * @returns {Promise<{space: string, root: string, shards: string[]} | null>}
  */
 export async function getUploadByRoot(root) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
   const command = new QueryCommand({
     TableName: config.tables.upload,
@@ -135,7 +121,7 @@ export async function getUploadByRoot(root) {
       '#root': 'root',
     },
     ExpressionAttributeValues: {
-      ':root': { S: root },
+      ':root': root,
     },
     Limit: 1,
   })
@@ -146,7 +132,7 @@ export async function getUploadByRoot(root) {
     return null
   }
   
-  const upload = unmarshall(response.Items[0])
+  const upload = response.Items[0]
   return {
     space: upload.space,
     root: upload.root,

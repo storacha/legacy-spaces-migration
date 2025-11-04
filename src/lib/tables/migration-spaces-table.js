@@ -3,22 +3,9 @@
  * 
  * Tracks one migration space per customer for storing legacy indexes
  */
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb'
-import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
+import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import { config } from '../../config.js'
-
-/**
- * Create DynamoDB client
- */
-export function createDynamoClient() {
-  return new DynamoDBClient({
-    region: config.aws.region,
-    credentials: config.aws.accessKeyId ? {
-      accessKeyId: config.aws.accessKeyId,
-      secretAccessKey: config.aws.secretAccessKey,
-    } : undefined,
-  })
-}
+import { getDynamoClient } from '../dynamo-client.js'
 
 /**
  * Get migration space for a customer
@@ -27,11 +14,11 @@ export function createDynamoClient() {
  * @returns {Promise<{migrationSpace: string, spaceName: string, indexCount: number, privateKey?: string} | null>}
  */
 export async function getMigrationSpace(customer) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
-  const command = new GetItemCommand({
+  const command = new GetCommand({
     TableName: config.tables.migrationSpaces,
-    Key: marshall({ customer }),
+    Key: { customer },
     ProjectionExpression: 'migrationSpace, spaceName, indexCount, #status, privateKey',
     ExpressionAttributeNames: {
       '#status': 'status',
@@ -44,13 +31,12 @@ export async function getMigrationSpace(customer) {
     return null
   }
   
-  const item = unmarshall(response.Item)
   return {
-    migrationSpace: item.migrationSpace,
-    spaceName: item.spaceName,
-    indexCount: item.indexCount || 0,
-    status: item.status,
-    privateKey: item.privateKey, // Encrypted private key
+    migrationSpace: response.Item.migrationSpace,
+    spaceName: response.Item.spaceName,
+    indexCount: response.Item.indexCount || 0,
+    status: response.Item.status,
+    privateKey: response.Item.privateKey, // Encrypted private key
   }
 }
 
@@ -65,7 +51,7 @@ export async function getMigrationSpace(customer) {
  * @returns {Promise<void>}
  */
 export async function createMigrationSpace({ customer, migrationSpace, spaceName, privateKey }) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
   const now = new Date().toISOString()
   
@@ -84,9 +70,9 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
     item.privateKey = privateKey
   }
   
-  const command = new PutItemCommand({
+  const command = new PutCommand({
     TableName: config.tables.migrationSpaces,
-    Item: marshall(item),
+    Item: item,
     // Prevent overwriting if race condition
     ConditionExpression: 'attribute_not_exists(customer)',
   })
@@ -135,17 +121,17 @@ export async function markSpaceAsProvisioned(customer) {
  * @returns {Promise<void>}
  */
 export async function incrementIndexCount(customer) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
-  const command = new UpdateItemCommand({
+  const command = new UpdateCommand({
     TableName: config.tables.migrationSpaces,
-    Key: marshall({ customer }),
+    Key: { customer },
     UpdateExpression: 'SET indexCount = if_not_exists(indexCount, :zero) + :one, lastUsed = :now',
-    ExpressionAttributeValues: marshall({
+    ExpressionAttributeValues: {
       ':zero': 0,
       ':one': 1,
       ':now': new Date().toISOString(),
-    }),
+    },
   })
   
   await client.send(command)
