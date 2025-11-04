@@ -10,6 +10,7 @@
 
 import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
 import * as Signer from '@ucanto/principal/ed25519'
+import * as ed25519 from '@ucanto/principal/ed25519'
 import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
 import * as HTTP from '@ucanto/transport/http'
@@ -30,7 +31,7 @@ import {
   delegateMigrationSpaceToCustomer,
   generateDAGIndex,
 } from './migration-utils.js'
-import { config } from '../config.js'
+import { config, getClaimsSigner } from '../config.js'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -241,15 +242,12 @@ export async function buildAndMigrateIndex({ upload }) {
 export async function republishLocationClaims({ space, shards, shardsWithSizes }) {
   console.log(`  Republishing ${shards.length} location claims with space...`)
   
-  if (!config.credentials.servicePrivateKey) {
-    throw new Error('SERVICE_PRIVATE_KEY not configured')
-  }
-
-  // Setup service signer and connection to claims service
-  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
+  // Get claims service signer with the correct did:web identity
+  const claimsSigner = await getClaimsSigner()
+  
   const claimsServiceURL = new URL(config.services.contentClaims)
   const claimsConnection = connect({
-    id: serviceSigner,
+    id: claimsSigner,
     codec: CAR.outbound,
     channel: HTTP.open({ url: claimsServiceURL })
   })
@@ -272,16 +270,16 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
       // Construct location URL from carpark
       const location = `${config.storage.carparkPublicUrl}/${shardCID}`
       
-      // Invoke directly with service signer (simpler than Absentee + attestation)
+      // Invoke with claims service signer
       const result = await Assert.location.invoke({
-        issuer: serviceSigner,
+        issuer: claimsSigner,
         audience: claimsConnection.id,
-        with: serviceSigner.did(),
+        with: claimsSigner.did(),
         nb: {
           content: { digest },
           location: [location],
           range: { offset: 0, length: size },
-          space,  // space field included to enable egress tracking
+          space: ed25519.Verifier.parse(space),  // space field included to enable egress tracking
         },
         expiration: Infinity,
       }).execute(claimsConnection)

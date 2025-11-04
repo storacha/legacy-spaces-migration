@@ -1,6 +1,9 @@
 /**
  * Configuration for the legacy spaces migration tool
  */
+import dotenv from 'dotenv'
+dotenv.config()
+import * as Signer from '@ucanto/principal/ed25519'
 
 /**
  * Environment-specific defaults
@@ -13,6 +16,7 @@ const ENVIRONMENTS = {
     carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link',
     indexingService: 'https://indexer.storacha.network',
     contentClaims: 'https://claims.web3.storage',
+    claimsDID: 'did:web:claims.web3.storage',
     uploadService: 'https://up.storacha.network',
     gatewayService: 'https://gateway.storacha.network',
     gatewayDID: 'did:web:w3s.link',
@@ -24,6 +28,7 @@ const ENVIRONMENTS = {
     carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link', // Use prod carpark for staging ?
     indexingService: 'https://staging.indexer.storacha.network',
     contentClaims: 'https://staging.claims.web3.storage',
+    claimsDID: 'did:web:staging.claims.web3.storage',
     uploadService: 'https://staging.up.storacha.network',
     gatewayService: 'https://gateway.storacha.network',
     gatewayDID: 'did:web:staging.w3s.link',
@@ -67,6 +72,7 @@ export const config = {
   services: {
     indexingService: process.env.INDEXING_SERVICE_URL || env.indexingService,
     contentClaims: process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
+    claimsDID: env.claimsDID,
     uploadService: process.env.UPLOAD_SERVICE_URL || env.uploadService,
     gatewayService: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
   },
@@ -88,9 +94,11 @@ export const config = {
   },
   
   credentials: {
-    // Service private key for publishing claims and acting on behalf of spaces
+    // Service private key for publishing to upload service
     servicePrivateKey: process.env.SERVICE_PRIVATE_KEY,
     serviceDID: process.env.SERVICE_DID || 'did:web:up.storacha.network',
+    // Claims service private key for publishing location claims
+    claimsServicePrivateKey: process.env.CLAIMS_SERVICE_PRIVATE_KEY,
   },
   
   admin: {
@@ -120,4 +128,18 @@ export function validateConfig() {
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
   }
+}
+
+/**
+ * Get the claims service signer with the correct did:web identity
+ * @returns {Promise<import('@ucanto/interface').Signer>}
+ */
+export async function getClaimsSigner() {
+  if (!config.credentials.claimsServicePrivateKey) {
+    throw new Error('CLAIMS_SERVICE_PRIVATE_KEY not configured')
+  }
+
+  // Parse the private key and override with the did:web identity from environment config
+  const claimsKeyPair = await Signer.parse(config.credentials.claimsServicePrivateKey)
+  return claimsKeyPair.withDID(config.services.claimsDID)
 }
