@@ -32,10 +32,15 @@
  * 
  *   # Migrate specific space:
  *   node src/migrate.js --space did:key:z6Mk... --limit 50
+ * 
+ *   # Migrate using customer list from file:
+ *   node src/migrate.js --customers-file migration-state/instance-1-customers.json --limit 100
+ *   node src/migrate.js --customers-file /path/to/customers.json --limit 100
  */
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
+import { readFile } from 'fs/promises'
 import { validateConfig, config } from './config.js'
 import { sampleUploads } from './lib/tables/upload-table.js'
 import { 
@@ -45,6 +50,35 @@ import {
   createGatewayAuth,
 } from './lib/migration-steps.js'
 import { verifyMigration } from './lib/migration-verify.js'
+
+/**
+ * Load customer list from a JSON file
+ * 
+ * @param {string} filepath - Path to the customers JSON file
+ * @returns {Promise<Array<string>>} - Array of customer DIDs
+ */
+async function loadCustomersFromFile(filepath) {
+  try {
+    const data = await readFile(filepath, 'utf-8')
+    const json = JSON.parse(data)
+    
+    if (!json.customers || !Array.isArray(json.customers)) {
+      throw new Error(`Invalid file format: missing customers array`)
+    }
+    
+    console.log(`Loaded ${json.customers.length} customers from ${filepath}`)
+    console.log(`  Estimated uploads: ${json.estimatedUploads?.toLocaleString() || 'unknown'}`)
+    console.log(`  Estimated spaces: ${json.estimatedSpaces?.toLocaleString() || 'unknown'}`)
+    console.log()
+    
+    return json.customers
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`Customer file not found: ${filepath}`)
+    }
+    throw error
+  }
+}
 
 /**
  * Migrate a single upload through all required steps
@@ -263,10 +297,17 @@ async function runMigrationMode(values) {
   const limit = parseInt(values.limit || '10', 10)
   const concurrency = parseInt(values.concurrency || '1', 10)
   
+  // Load customers from file if --customers-file is provided
+  let customers = null
+  if (values['customers-file']) {
+    customers = await loadCustomersFromFile(values['customers-file'])
+  }
+  
   console.log('Configuration:')
   console.log(`  Mode: ${modeLabel}`)
   console.log(`  Limit: ${limit} uploads`)
   console.log(`  Concurrency: ${concurrency}`)
+  if (values['customers-file']) console.log(`  Customers file: ${values['customers-file']} (${customers.length} customers)`)
   if (values.space) console.log(`  Space filter: ${values.space}`)
   if (values.customer) console.log(`  Customer filter: ${values.customer}`)
   console.log()
@@ -275,11 +316,30 @@ async function runMigrationMode(values) {
   let processed = 0
   
   // Process uploads
+  // If --customers-file is provided, filter uploads by customers in the file
+  // Otherwise, sample from all uploads (existing behavior)
+  const customerSet = customers ? new Set(customers) : null
+  
+  if (customerSet) {
+    console.log(`Filtering uploads by ${customerSet.size} customers from file...`)
+    console.log()
+  }
+  
+  // Import getCustomerForSpace to check upload ownership
+  const { getCustomerForSpace } = await import('./lib/tables/consumer-table.js')
+  
   for await (const upload of sampleUploads({ 
-    limit, 
+    limit: limit * 10, // Sample more to account for filtering
     space: values.space,
-    customer: values.customer 
   })) {
+    // If instance mode, check if upload belongs to one of our customers
+    if (customerSet) {
+      const customer = await getCustomerForSpace(upload.space)
+      if (!customer || !customerSet.has(customer)) {
+        continue // Skip uploads not belonging to our customers
+      }
+    }
+    
     processed++
     console.log(`\n[${processed}/${limit}]`)
     
@@ -290,10 +350,12 @@ async function runMigrationMode(values) {
     
     results.push(result)
     
-    // Small delay between uploads to avoid overwhelming services
-    if (processed < limit) {
-      await new Promise(resolve => setTimeout(resolve, 100))
+    if (processed >= limit) {
+      break
     }
+    
+    // Small delay between uploads to avoid overwhelming services
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
   
   // Print summary
@@ -384,6 +446,10 @@ async function main() {
         type: 'string',
         short: 'c',
         description: 'Filter by customer DID',
+      },
+      'customers-file': {
+        type: 'string',
+        description: 'Path to customers JSON file (filters migration to these customers)',
       },
       concurrency: {
         type: 'string',

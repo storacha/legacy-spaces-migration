@@ -118,82 +118,47 @@ echo "STORACHA_ENV=staging" >> .env
 
 ## Usage
 
-### Migration Workflow
+The migration process has 4 main steps:
 
-The migration script performs the following steps for each upload:
+### 1. Estimate Costs
 
-1. **Check Migration Status** - Query indexing service to determine what's needed
-2. **Generate & Register Index** - Create sharded DAG index if missing
-3. **Republish Location Claims** - Add space information to location claims
-4. **Create Gateway Authorization** - Enable content serving with egress tracking (TODO)
-
-### Test Modes
-
-Test individual migration steps before running full migration:
-
-#### 1. Test Index Generation Only
+Analyze the workload and estimate time/costs:
 
 ```bash
-node src/migrate.js --test-index --limit 10
+node src/estimate-costs.js --sample 2000 --total 37028823
 ```
 
-Tests index generation for 10 uploads. Skips location claims and gateway auth.
+[📖 Detailed cost estimation guide](docs/COST_ESTIMATION.md)
 
-#### 2. Test Location Claims Only
+### 2. Setup Distribution
+
+Distribute customers across EC2 instances:
 
 ```bash
-node src/migrate.js --test-location-claims --limit 10
+node src/setup-distribution.js --instances 5
 ```
 
-Tests republishing location claims with space information. Skips index if already exists.
+[📖 Detailed setup guide](docs/SETUP_DISTRIBUTION.md)
 
-#### 3. Test Gateway Authorization Only
+### 3. Run Migration
+
+Execute the migration on each EC2 instance:
 
 ```bash
-node src/migrate.js --test-gateway-auth --limit 10
+node src/migrate.js --customers-file migration-state/instance-1-customers.json --limit 1000
 ```
 
-Tests creating gateway authorizations (when implemented).
+[📖 Detailed migration guide](docs/MIGRATION.md)
 
-#### 4. Test Specific Upload
+### 4. Monitor Progress
+
+Track migration status in real-time:
 
 ```bash
-node src/migrate.js --test-index \
-  --space did:key:z6Mki2bMA7RKuhtNbGpEQdfBn1gWzSDyRs1Akytx6giHKxRJ \
-  --cid bafkreieqxb4eiieaswm3iixmmgzxjwzguzpcwbjz762hmtz2ndbekmjecu
+node src/migration-monitor.js --watch
 ```
 
-### Full Migration
-
-Run complete migration (all steps) on multiple uploads:
-
-```bash
-# Migrate 100 uploads
-node src/migrate.js --limit 100
-
-# Migrate specific space
-node src/migrate.js --space did:key:z6Mk... --limit 50
-
-# Migrate specific customer
-node src/migrate.js --customer did:key:z6Mk... --limit 1000
-```
-
-### Additional Options
-
-```bash
-node src/migrate.js [options]
-
-Options:
-  --test-index              Test index generation only
-  --test-location-claims    Test location claims republishing only
-  --test-gateway-auth       Test gateway authorization only
-  --limit <N>               Number of uploads to process (default: 10)
-  --space <DID>             Filter by space DID
-  --customer <DID>          Filter by customer DID
-  --cid <CID>               Process specific upload by CID
-  --concurrency <N>         Number of concurrent migrations (default: 1)
-  --output <file>           Results output file (default: migration-results.json)
-```
+[📖 Detailed monitoring guide](docs/MONITORING.md)
 
 ### Example Output
 
@@ -245,29 +210,7 @@ Configuration:
 ======================================================================
 ```
 
-### Cost Estimation
-
-Before running the full migration, estimate the costs and duration using the sampling tool.
-
-#### Quick Start
-
-Run a sample of 2,000 uploads to estimate costs:
-
-```bash
-node src/estimate-costs.js --sample 2000 --total 37028823
-```
-
-#### Command Options
-
-```bash
-node src/estimate-costs.js [options]
-
-Options:
-  --sample <N>      Number of uploads to sample (default: 1000)
-  --total <N>       Total uploads in database for extrapolation
-  --space <DID>     Filter to specific space DID (optional)
-  --dry-run         Only count shards without calling index worker
-```
+---
 
 ## Architecture
 
