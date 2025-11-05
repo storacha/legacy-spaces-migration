@@ -20,7 +20,6 @@ import {
 import { provisionSpace } from './tables/consumer-table.js'
 import { encryptPrivateKey, decryptPrivateKey } from './crypto-utils.js'
 import { storeDelegations } from './tables/delegations-table.js'
-import { config } from '../config.js'
 
 /**
  * Get or create migration space for a customer
@@ -37,7 +36,13 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
     try {
       console.log(`    ✓ Migration space exists: ${existing.migrationSpace}`)
       const decryptedKey = decryptPrivateKey(existing.privateKey)
-      const space = await Signer.parse(decryptedKey)
+      const signer = await Signer.parse(decryptedKey)
+      
+      // Wrap the signer in an OwnedSpace object to match the type returned by Space.generate()
+      const space = new Space.OwnedSpace({
+        signer,
+        name: existing.spaceName,
+      })
       
       return { space, isNew: false, spaceDID: existing.migrationSpace }
     } catch (error) {
@@ -48,23 +53,31 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
   
   // Create new migration space
   const spaceName = `Migrated Indexes - ${customer}`
-  const space = await Space.generate({ name: spaceName })
+  const migrationSpace = await Space.generate({ name: spaceName })
   
   // Encrypt private key for storage
-  // Extract the secret key from the signer
-  const privateKeyBytes = space.signer.secret || space.signer.bytes
-  const encryptedKey = encryptPrivateKey(privateKeyBytes)
+  // Format signer as multibase string (same format that Signer.parse() expects)
+  const privateKeyString = Signer.format(migrationSpace.signer)
+  const encryptedKey = encryptPrivateKey(privateKeyString)
+  const spaceDID = migrationSpace.did()
   
   // Store in tracking table with encrypted key
   await createMigrationSpace({
     customer,
-    migrationSpace: space.did(),
+    migrationSpace: spaceDID,
     spaceName,
     privateKey: encryptedKey,
   })
   
-  console.log(`    ✓ Created migration space: ${space.did()}`)
-  return { space, isNew: true, spaceDID: space.did() }
+  console.log(`    ✓ Created migration space: ${spaceDID}`)
+  
+  // Provision the migration space to the customer
+  await provisionMigrationSpace({
+    customer,
+    migrationSpaceDID: spaceDID,
+  })
+  
+  return { space: migrationSpace, isNew: true, spaceDID }
 }
 
 /**
@@ -79,13 +92,15 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
  * @returns {Promise<void>}
  */
 export async function provisionMigrationSpace({ customer, migrationSpaceDID }) {
-  console.log(`    Provisioning space to customer account...`)
+  console.log(`    Provisioning space ${migrationSpaceDID} to customer account ${customer}...`)
   
   // Add the space to the consumer table
   await provisionSpace(customer, migrationSpaceDID)
   
   // Mark as provisioned in our tracking table
   await markSpaceAsProvisioned(customer)
+
+  console.log(`    ✓ Provisioned space ${migrationSpaceDID} to customer account ${customer}`)
 }
 
 /**

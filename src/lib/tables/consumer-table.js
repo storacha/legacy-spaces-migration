@@ -1,7 +1,7 @@
 /**
  * Query Consumer Table to get space ownership (space -> customer mapping)
  */
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb'
+import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { CBOR } from '@ucanto/core'
 import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
@@ -12,6 +12,7 @@ const customerCache = new Map()
 
 /**
  * Get customer (account) DID for a given space (with caching)
+ * It uses the consumerV2 index to be able to retrieve the customer from the space
  * 
  * @param {string} space - Space DID (consumer)
  * @returns {Promise<string | null>} - Customer DID (did:mailto:...) or null if not found
@@ -22,22 +23,35 @@ export async function getCustomerForSpace(space) {
     return customerCache.get(space)
   }
   
-  // Query DynamoDB
+  // Query DynamoDB using the consumer GSI
+  // The consumer table has composite key (subscription, provider) but consumer is indexed via GSI
   const client = getDynamoClient()
   
-  const command = new GetCommand({
-    TableName: config.tables.consumer,
-    Key: { consumer: space },
-  })
+  // Try querying with each configured provider until we find the space
+  for (const provider of config.services.storageProviders) {
+    const command = new QueryCommand({
+      TableName: config.tables.consumer,
+      IndexName: 'consumerV2',
+      KeyConditionExpression: 'consumer = :consumer',
+      ExpressionAttributeValues: {
+        ':consumer': space,
+      },
+      Limit: 1,
+    })
+    
+    const response = await client.send(command)
+    
+    if (response.Items && response.Items.length > 0) {
+      const customer = response.Items[0].customer
+      // Cache the result
+      customerCache.set(space, customer)
+      return customer
+    }
+  }
   
-  const response = await client.send(command)
-  
-  const customer = response.Item?.customer || null
-  
-  // Cache the result (even if null to avoid repeated failed lookups)
-  customerCache.set(space, customer)
-  
-  return customer
+  // Not found in any provider
+  customerCache.set(space, null)
+  return null
 }
 
 /**

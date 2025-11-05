@@ -13,7 +13,7 @@ const IV_LENGTH = 16
 /**
  * Encrypt a private key for storage
  * 
- * @param {Uint8Array | string} privateKey - Private key to encrypt
+ * @param {string} privateKey - Private key in multibase format (from Signer.format())
  * @returns {string} - Encrypted data as JSON string
  */
 export function encryptPrivateKey(privateKey) {
@@ -21,10 +21,12 @@ export function encryptPrivateKey(privateKey) {
     throw new Error('MIGRATION_ENCRYPTION_KEY not configured')
   }
   
-  // Convert to string if Uint8Array
-  const keyString = typeof privateKey === 'string' 
-    ? privateKey 
-    : Buffer.from(privateKey).toString('base64')
+  if (typeof privateKey !== 'string') {
+    throw new Error('Private key must be a string in multibase format')
+  }
+  
+  // Convert multibase string to buffer
+  const keyBuffer = Buffer.from(privateKey, 'utf8')
   
   // Generate random IV
   const iv = crypto.randomBytes(IV_LENGTH)
@@ -34,7 +36,7 @@ export function encryptPrivateKey(privateKey) {
   
   // Encrypt
   const encrypted = Buffer.concat([
-    cipher.update(keyString, 'utf8'),
+    cipher.update(keyBuffer),
     cipher.final()
   ])
   
@@ -53,7 +55,7 @@ export function encryptPrivateKey(privateKey) {
  * Decrypt a private key from storage
  * 
  * @param {string} encryptedData - Encrypted data as JSON string
- * @returns {string} - Decrypted private key
+ * @returns {string} - Decrypted private key in multibase format (ready for Signer.parse())
  */
 export function decryptPrivateKey(encryptedData) {
   if (!config.encryption.key) {

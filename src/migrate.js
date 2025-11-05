@@ -181,20 +181,18 @@ async function migrateUpload(upload, options = {}) {
     
     if (status.needsLocationClaims && shouldRunLocationClaims) {
       console.log(`\n3)  Republishing location claims with space...`)
+      
+      // Use the original user's space for location claims (for egress billing)
       await republishLocationClaims({
-        space: upload.space,
+        space: upload.space,  // Original space, not migration space
         shards: status.shardsNeedingLocationClaims,
         shardsWithSizes, // Reuse from step 2 if available
       })
       console.log(`   ✅ Location claims republished for ${status.shardsNeedingLocationClaims.length} shards`)
       
-      // Re-register the index to notify the indexing service about new location claims
-      if (status.hasIndexClaim && indexCID) {
-        console.log(`\n   Re-registering index to update indexing service...`)
-        const indexCIDParsed = typeof indexCID === 'string' ? CID.parse(indexCID) : indexCID
-        await registerIndex({ upload, indexCID: indexCIDParsed })
-        console.log(`   ✓ Index re-registered`)
-      }
+      // Note: We don't need to re-register the index. The indexing service will
+      // automatically pick up the new location claims we just published.
+      // Re-registering would require uploading the index blob again to the migration space.
       
       // If test mode, stop here
       if (options.testMode === 'location-claims') {
