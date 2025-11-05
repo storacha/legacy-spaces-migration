@@ -38,6 +38,7 @@ export async function verifyMigration({ upload }) {
   
   try {
     // Query indexing service to check current state
+    // Note: Querying the root CID returns index claim AND location claims for shards
     const indexingData = await queryIndexingService(upload.root)
     
     // Verify index claim exists
@@ -48,12 +49,17 @@ export async function verifyMigration({ upload }) {
     const locationClaims = indexingData.claims.filter(c => c.type === 'assert/location')
     console.log(`    Location claims found: ${locationClaims.length}`)
     
-    // Build map of shard multihash -> location claim with space info
+    // Build map of shard multihash -> array of location claims
+    // There may be multiple claims per shard (old without space, new with space)
     const shardLocationMap = new Map()
     for (const claim of locationClaims) {
       const contentMultihash = claim.content.multihash ?? Digest.decode(claim.content.digest)
-      const hasSpace = claim.space != null && claim.space === upload.space
-      shardLocationMap.set(base58btc.encode(contentMultihash.bytes), { claim, hasSpace })
+      const multihashStr = base58btc.encode(contentMultihash.bytes)
+      
+      if (!shardLocationMap.has(multihashStr)) {
+        shardLocationMap.set(multihashStr, [])
+      }
+      shardLocationMap.get(multihashStr).push(claim)
     }
     
     // Check each shard
@@ -63,17 +69,26 @@ export async function verifyMigration({ upload }) {
     for (const shardCID of upload.shards) {
       const cid = CID.parse(shardCID)
       const multihashStr = base58btc.encode(cid.multihash.bytes)
-      const locationInfo = shardLocationMap.get(multihashStr)
+      const claims = shardLocationMap.get(multihashStr) || []
       
-      if (!locationInfo) {
+      if (claims.length === 0) {
         allShardsHaveLocationClaims = false
         shardsWithoutSpace.push(shardCID)
         console.log(`    ✗ ${shardCID}: no location claim`)
-      } else if (!locationInfo.hasSpace) {
-        shardsWithoutSpace.push(shardCID)
-        console.log(`    ✗ ${shardCID}: location claim missing space field`)
       } else {
-        console.log(`    ✓ ${shardCID}: location claim with space`)
+        // Check if ANY claim has space information matching this upload's space
+        const hasClaimWithSpace = claims.some(claim => 
+          claim.space != null && claim.space.did() === upload.space
+        )
+        
+        if (hasClaimWithSpace) {
+          const claimsWithSpace = claims.filter(c => c.space && c.space.did() === upload.space).length
+          const claimsWithoutSpace = claims.length - claimsWithSpace
+          console.log(`    ✓ ${shardCID}: ${claimsWithSpace} claim(s) with space${claimsWithoutSpace > 0 ? ` (${claimsWithoutSpace} legacy claim(s) without space)` : ''}`)
+        } else {
+          shardsWithoutSpace.push(shardCID)
+          console.log(`    ✗ ${shardCID}: ${claims.length} location claim(s) found, but none have space field`)
+        }
       }
     }
     

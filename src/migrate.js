@@ -48,8 +48,10 @@ import {
   buildAndMigrateIndex,
   republishLocationClaims,
   createGatewayAuth,
+  registerIndex,
 } from './lib/migration-steps.js'
 import { verifyMigration } from './lib/migration-verify.js'
+import { CID } from 'multiformats/cid'
 
 /**
  * Load customer list from a JSON file
@@ -141,13 +143,13 @@ async function migrateUpload(upload, options = {}) {
     
     let shardsWithSizes = null
     let migrationSpace = null
-    let indexCID = null
+    let indexCID = status.indexCID
     
     // Step 2: Build and register index
     const shouldRunIndex = !options.testMode || options.testMode === 'index'
     
     if (status.needsIndexGeneration && shouldRunIndex) {
-      console.log(`\n2)  Generating and registering index...`)
+      console.log(`\n2) Building and registering index...`)
       const result = await buildAndMigrateIndex({ upload })
       shardsWithSizes = result.shards
       migrationSpace = result.migrationSpace
@@ -185,6 +187,14 @@ async function migrateUpload(upload, options = {}) {
         shardsWithSizes, // Reuse from step 2 if available
       })
       console.log(`   ✅ Location claims republished for ${status.shardsNeedingLocationClaims.length} shards`)
+      
+      // Re-register the index to notify the indexing service about new location claims
+      if (status.hasIndexClaim && indexCID) {
+        console.log(`\n   Re-registering index to update indexing service...`)
+        const indexCIDParsed = typeof indexCID === 'string' ? CID.parse(indexCID) : indexCID
+        await registerIndex({ upload, indexCID: indexCIDParsed })
+        console.log(`   ✓ Index re-registered`)
+      }
       
       // If test mode, stop here
       if (options.testMode === 'location-claims') {

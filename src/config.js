@@ -25,7 +25,7 @@ const ENVIRONMENTS = {
     region: 'us-east-2',
     tablePrefix: 'staging-w3infra',
     carparkBucket: 'carpark-staging-0',
-    carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link', // Use prod carpark for staging ?
+    carparkPublicUrl: 'https://carpark-staging-0.r2.w3s.link',
     indexingService: 'https://staging.indexer.storacha.network',
     contentClaims: 'https://staging.claims.web3.storage',
     claimsDID: 'did:web:staging.claims.web3.storage',
