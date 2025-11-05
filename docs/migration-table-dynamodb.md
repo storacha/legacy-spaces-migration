@@ -24,6 +24,21 @@ aws dynamodb create-table \
   --region us-east-2
 ```
 
+```sh
+aws dynamodb create-table \
+  --profile felipe-storacha \
+  --table-name staging-migration-spaces \
+  --attribute-definitions \
+    AttributeName=customer,AttributeType=S \
+  --key-schema \
+    AttributeName=customer,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-2 \
+  --tags \
+    Key=Environment,Value=staging \
+    Key=Purpose,Value=LegacyContentMigration
+```
+
 
 ### Production
 
@@ -49,4 +64,20 @@ aws dynamodb create-table \
       \"Projection\": {\"ProjectionType\":\"ALL\"}
     }]" \
   --region us-west-2
+```
+
+
+```sh
+aws dynamodb create-table \
+  --profile felipe-storacha \
+  --table-name prod-migration-spaces \
+  --attribute-definitions \
+    AttributeName=customer,AttributeType=S \
+  --key-schema \
+    AttributeName=customer,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-west-2 \
+  --tags \
+    Key=Environment,Value=production \
+    Key=Purpose,Value=LegacyContentMigration
 ```

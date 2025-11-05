@@ -96,19 +96,19 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
  * @returns {Promise<void>}
  */
 export async function markSpaceAsProvisioned(customer) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
-  const command = new UpdateItemCommand({
+  const command = new UpdateCommand({
     TableName: config.tables.migrationSpaces,
-    Key: marshall({ customer }),
+    Key: { customer },
     UpdateExpression: 'SET #status = :status, lastUsed = :now',
     ExpressionAttributeNames: {
       '#status': 'status',
     },
-    ExpressionAttributeValues: marshall({
+    ExpressionAttributeValues: {
       ':status': 'provisioned',
       ':now': new Date().toISOString(),
-    }),
+    },
   })
   
   await client.send(command)

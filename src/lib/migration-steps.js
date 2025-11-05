@@ -25,9 +25,9 @@ import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
+import { DID } from '@ucanto/core'
 import {
   getOrCreateMigrationSpaceForCustomer,
-  provisionMigrationSpace,
   delegateMigrationSpaceToCustomer,
   generateDAGIndex,
 } from './migration-utils.js'
@@ -163,23 +163,23 @@ export async function buildAndMigrateIndex({ upload }) {
     throw new Error('Migration space not available - this should never happen!')
   }
   console.log(`    Migration space: ${migrationSpaceDID} ${isNew ? '(newly created)' : '(existing)'}`)
-
-  // Provision migration space to customer (only if newly created)
-  if (isNew) {
-    await provisionMigrationSpace({
-      customer,
-      migrationSpaceDID,
-    })
-  }
   
   // Upload index blob to migration space via space/blob/add
   console.log(`    Uploading index blob (${indexBytes.length} bytes)...`)
+  
+  // Parse the upload service DID for the audience
+  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+  
+  // Get the signer from the migration space
+  const spaceSigner = migrationSpace.signer || migrationSpace
+  
   try {
     await SpaceBlob.add(
       {
-        issuer: migrationSpace,      // Sign with migration space key
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
         with: migrationSpaceDID,     // Upload to migration space
-        audience: connection.id,
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
       },
       indexDigest,
       indexBytes,
@@ -205,19 +205,23 @@ export async function buildAndMigrateIndex({ upload }) {
   
   // Register index via space/index/add (publishes assert/index claim)
   console.log(`    Registering index with indexing service...`)
+  
   let indexInvocation
   try {
     indexInvocation = await Index.add(
       {
-        issuer: migrationSpace,      // Sign with migration space key
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
         with: migrationSpaceDID,     // Register for migration space
-        audience: connection.id,
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
       },
       indexCID,
       { connection }
     )
     console.log(`    ✓ Index registered (assert/index claim published)`)
   } catch (error) {
+    console.log(`    DEBUG: Index.add threw error:`, error.message)
+    console.log(`    DEBUG: Error cause:`, JSON.stringify(error.cause, null, 2))
     throw new Error(`Failed to register index: ${error.message}`)
   }
   
@@ -272,21 +276,51 @@ export async function registerIndex({ upload, indexCID }) {
   
   const { space: migrationSpace, spaceDID: migrationSpaceDID } = await getOrCreateMigrationSpaceForCustomer(customer)
   
-  // Register index via space/index/add (publishes assert/index claim)
-  const result = await Index.add(
-    {
-      issuer: migrationSpace,
-      with: migrationSpaceDID,
-      audience: connection.id,
-    },
-    indexCID,
-    { connection }
-  )
+  console.log(`    DEBUG: migrationSpace type:`, typeof migrationSpace, migrationSpace?.constructor?.name)
+  console.log(`    DEBUG: migrationSpaceDID:`, migrationSpaceDID)
+  console.log(`    DEBUG: has signer:`, !!migrationSpace?.signer)
   
-  console.log(`    Index registration result:`, result.out.ok ? '✓ Success' : `✗ Error: ${result.out.error}`)
+  // Register index via space/index/add (publishes assert/index claim)
+  // Get the signer from the migration space
+  const spaceSigner = migrationSpace.signer || migrationSpace
+  
+  console.log(`    DEBUG: config.services:`, JSON.stringify(config.services, null, 2))
+  console.log(`    DEBUG: uploadServiceDID from config:`, config.services.uploadServiceDID)
+  
+  if (!config.services.uploadServiceDID) {
+    throw new Error('uploadServiceDID not configured in config.services')
+  }
+  
+  // Parse the upload service DID for the audience
+  const { DID } = await import('@ucanto/core')
+  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+  
+  console.log(`    DEBUG: parsed uploadServiceDID:`, uploadServiceDID.did())
+  console.log(`    DEBUG: spaceSigner DID:`, spaceSigner.did())
+  
+  let result
+  try {
+    result = await Index.add(
+      {
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
+        with: migrationSpaceDID,     // Register index for migration space
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
+      },
+      indexCID,
+      { connection }
+    )
+  } catch (error) {
+    console.log(`    DEBUG: Index.add threw error:`, error.message)
+    console.log(`    DEBUG: Error cause:`, JSON.stringify(error.cause, null, 2))
+    throw error
+  }
+  
+  console.log(`    DEBUG: Index.add result:`, JSON.stringify(result, null, 2))
+  console.log(`    Index registration result:`, result.out.ok ? '✓ Success' : `✗ Error: ${JSON.stringify(result.out.error)}`)
   
   if (result.out.error) {
-    throw new Error(`Failed to register index: ${result.out.error.message}`)
+    throw new Error(`Failed to register index: ${result.out.error.message || JSON.stringify(result.out.error)}`)
   }
   
   return result
