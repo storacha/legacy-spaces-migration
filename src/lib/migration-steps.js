@@ -25,9 +25,9 @@ import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
+import { DID } from '@ucanto/core'
 import {
   getOrCreateMigrationSpaceForCustomer,
-  provisionMigrationSpace,
   delegateMigrationSpaceToCustomer,
   generateDAGIndex,
 } from './migration-utils.js'
@@ -163,23 +163,23 @@ export async function buildAndMigrateIndex({ upload }) {
     throw new Error('Migration space not available - this should never happen!')
   }
   console.log(`    Migration space: ${migrationSpaceDID} ${isNew ? '(newly created)' : '(existing)'}`)
-
-  // Provision migration space to customer (only if newly created)
-  if (isNew) {
-    await provisionMigrationSpace({
-      customer,
-      migrationSpaceDID,
-    })
-  }
   
   // Upload index blob to migration space via space/blob/add
   console.log(`    Uploading index blob (${indexBytes.length} bytes)...`)
+  
+  // Parse the upload service DID for the audience
+  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+  
+  // Get the signer from the migration space
+  const spaceSigner = migrationSpace.signer || migrationSpace
+  
   try {
     await SpaceBlob.add(
       {
-        issuer: migrationSpace,      // Sign with migration space key
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
         with: migrationSpaceDID,     // Upload to migration space
-        audience: connection.id,
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
       },
       indexDigest,
       indexBytes,
@@ -205,19 +205,23 @@ export async function buildAndMigrateIndex({ upload }) {
   
   // Register index via space/index/add (publishes assert/index claim)
   console.log(`    Registering index with indexing service...`)
+  
   let indexInvocation
   try {
     indexInvocation = await Index.add(
       {
-        issuer: migrationSpace,      // Sign with migration space key
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
         with: migrationSpaceDID,     // Register for migration space
-        audience: connection.id,
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
       },
       indexCID,
       { connection }
     )
     console.log(`    ✓ Index registered (assert/index claim published)`)
   } catch (error) {
+    console.log(`    DEBUG: Index.add threw error:`, error.message)
+    console.log(`    DEBUG: Error cause:`, JSON.stringify(error.cause, null, 2))
     throw new Error(`Failed to register index: ${error.message}`)
   }
   
@@ -272,21 +276,51 @@ export async function registerIndex({ upload, indexCID }) {
   
   const { space: migrationSpace, spaceDID: migrationSpaceDID } = await getOrCreateMigrationSpaceForCustomer(customer)
   
-  // Register index via space/index/add (publishes assert/index claim)
-  const result = await Index.add(
-    {
-      issuer: migrationSpace,
-      with: migrationSpaceDID,
-      audience: connection.id,
-    },
-    indexCID,
-    { connection }
-  )
+  console.log(`    DEBUG: migrationSpace type:`, typeof migrationSpace, migrationSpace?.constructor?.name)
+  console.log(`    DEBUG: migrationSpaceDID:`, migrationSpaceDID)
+  console.log(`    DEBUG: has signer:`, !!migrationSpace?.signer)
   
-  console.log(`    Index registration result:`, result.out.ok ? '✓ Success' : `✗ Error: ${result.out.error}`)
+  // Register index via space/index/add (publishes assert/index claim)
+  // Get the signer from the migration space
+  const spaceSigner = migrationSpace.signer || migrationSpace
+  
+  console.log(`    DEBUG: config.services:`, JSON.stringify(config.services, null, 2))
+  console.log(`    DEBUG: uploadServiceDID from config:`, config.services.uploadServiceDID)
+  
+  if (!config.services.uploadServiceDID) {
+    throw new Error('uploadServiceDID not configured in config.services')
+  }
+  
+  // Parse the upload service DID for the audience
+  const { DID } = await import('@ucanto/core')
+  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+  
+  console.log(`    DEBUG: parsed uploadServiceDID:`, uploadServiceDID.did())
+  console.log(`    DEBUG: spaceSigner DID:`, spaceSigner.did())
+  
+  let result
+  try {
+    result = await Index.add(
+      {
+        issuer: spaceSigner,         // Sign with the space's signer (owner can self-authorize)
+        with: migrationSpaceDID,     // Register index for migration space
+        audience: uploadServiceDID,  // Audience is the upload service DID
+        proofs: [],                  // Empty proofs - space owner self-authorizes
+      },
+      indexCID,
+      { connection }
+    )
+  } catch (error) {
+    console.log(`    DEBUG: Index.add threw error:`, error.message)
+    console.log(`    DEBUG: Error cause:`, JSON.stringify(error.cause, null, 2))
+    throw error
+  }
+  
+  console.log(`    DEBUG: Index.add result:`, JSON.stringify(result, null, 2))
+  console.log(`    Index registration result:`, result.out.ok ? '✓ Success' : `✗ Error: ${JSON.stringify(result.out.error)}`)
   
   if (result.out.error) {
-    throw new Error(`Failed to register index: ${result.out.error.message}`)
+    throw new Error(`Failed to register index: ${result.out.error.message || JSON.stringify(result.out.error)}`)
   }
   
   return result
@@ -394,9 +428,6 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
  * @returns {Promise<void>}
  */
 export async function createGatewayAuth({ space }) {
-  console.log(`  Creating gateway authorization...`)
-  console.log(`    Space: ${space}`)
-  
   if (!config.credentials.servicePrivateKey) {
     throw new Error('SERVICE_PRIVATE_KEY not configured')
   }
@@ -412,7 +443,6 @@ export async function createGatewayAuth({ space }) {
   
   // Gateway DID (audience for the delegation)
   const gatewayDID = config.gateway.did
-  console.log(`    Gateway: ${gatewayDID}`)
   
   // Create principal object for ucanto
   const gatewayPrincipal = {
@@ -429,7 +459,7 @@ export async function createGatewayAuth({ space }) {
       nb: {},  // No additional caveats - allows serving all content
       expiration: Infinity,
     })
-    console.log(`    ✓ Delegation created: ${delegation.cid}`)
+    console.log(`  Delegation created:    ✓ ${delegation.cid}`)
 
     // Service attests the delegation (proves service authorized this)
     const attestation = await UCAN.attest.delegate({
@@ -439,13 +469,14 @@ export async function createGatewayAuth({ space }) {
       nb: { proof: delegation.cid },
       expiration: Infinity,
     })
-    console.log(`    ✓ Attestation created: ${attestation.cid}`)
+    console.log(`  Attestation created:   ✓ ${attestation.cid}`)
 
     // Publish to gateway via access/delegate
+    // The service is publishing to its own KV store, so 'with' should be the service DID
     const result = await Access.delegate.invoke({
       issuer: serviceSigner,
       audience: gatewayPrincipal,  // Principal with did() method
-      with: space,
+      with: serviceSigner.did(),  // Service is acting on its own behalf, not the space's
       nb: {
         delegations: {
           [delegation.cid.toString()]: delegation.cid,
@@ -460,139 +491,14 @@ export async function createGatewayAuth({ space }) {
       )
     }
     
-    console.log(`    ✓ Gateway authorization published successfully`)
+    console.log(`  Publishing to gateway: ✓ published`)
+    return { success: true }
   } catch (error) {
     // Log error but don't fail the migration - gateway auth can be retried independently
-    console.error(`    ✗ Failed to create gateway authorization: ${error.message}`)
-    console.error(`    This can be retried independently without affecting other migration steps`)
+    console.log(`  Publishing to gateway: ✗ FAILED`)
+    console.log(`\n  Error: ${error.message}`)
+    console.log(`\n  Note: This can be retried independently`)
     // Don't throw - allow migration to continue
-  }
-}
-
-/**
- * Verify that all migration steps completed successfully
- * 
- * Re-queries the indexing service to confirm:
- * 1. Index claim exists for the root CID
- * 2. Location claims exist for all shards
- * 3. Location claims include space information
- * 
- * Note: Gateway authorization verification is not included as it would require
- * querying the gateway's CloudFlare KV store, which is not easily accessible
- * from this script. We rely on the access/delegate invocation response to
- * confirm the delegation was stored.
- * 
- * @param {object} params
- * @param {object} params.upload - Upload record from Upload Table
- * @param {string} params.upload.space - Space DID
- * @param {string} params.upload.root - Root CID
- * @param {string[]} params.upload.shards - Shard CIDs
- * @returns {Promise<{
- *   success: boolean,
- *   indexVerified: boolean,
- *   locationClaimsVerified: boolean,
- *   allShardsHaveSpace: boolean,
- *   shardsWithoutSpace: string[],
- *   details: string
- * }>}
- */
-export async function verifyMigration({ upload }) {
-  console.log(`  Verifying migration...`)
-  console.log(`    Root: ${upload.root}`)
-  console.log(`    Space: ${upload.space}`)
-  console.log(`    Shards: ${upload.shards.length}`)
-  
-  try {
-    // Query indexing service to check current state
-    const indexingData = await queryIndexingService(upload.root)
-    
-    // Verify index claim exists
-    const indexVerified = indexingData.hasIndexClaim
-    console.log(`    Index claim: ${indexVerified ? '✓ EXISTS' : '✗ MISSING'}`)
-    
-    // Extract location claims
-    const locationClaims = indexingData.claims.filter(c => c.type === 'assert/location')
-    console.log(`    Location claims found: ${locationClaims.length}`)
-    
-    // Build map of shard multihash -> array of location claims
-    // There may be multiple claims per shard (old without space, new with space)
-    const shardLocationMap = new Map()
-    for (const claim of locationClaims) {
-      const contentMultihash = claim.content.multihash ?? Digest.decode(claim.content.digest)
-      const multihashStr = base58btc.encode(contentMultihash.bytes)
-      
-      if (!shardLocationMap.has(multihashStr)) {
-        shardLocationMap.set(multihashStr, [])
-      }
-      shardLocationMap.get(multihashStr).push(claim)
-    }
-    
-    // Check each shard
-    const shardsWithoutSpace = []
-    let allShardsHaveLocationClaims = true
-    
-    for (const shardCID of upload.shards) {
-      const cid = CID.parse(shardCID)
-      const multihashStr = base58btc.encode(cid.multihash.bytes)
-      const claims = shardLocationMap.get(multihashStr) || []
-      
-      if (claims.length === 0) {
-        allShardsHaveLocationClaims = false
-        shardsWithoutSpace.push(shardCID)
-        console.log(`    ✗ ${shardCID}: no location claim`)
-      } else {
-        // Check if ANY claim has space information matching this upload's space
-        const hasClaimWithSpace = claims.some(claim => 
-          claim.space != null && claim.space === upload.space
-        )
-        
-        if (hasClaimWithSpace) {
-          console.log(`    ✓ ${shardCID}: location claim with space`)
-        } else {
-          shardsWithoutSpace.push(shardCID)
-          console.log(`    ✗ ${shardCID}: location claim missing space field`)
-        }
-      }
-    }
-    
-    const locationClaimsVerified = allShardsHaveLocationClaims
-    const allShardsHaveSpace = shardsWithoutSpace.length === 0
-    const success = indexVerified && locationClaimsVerified && allShardsHaveSpace
-    
-    // Summary
-    console.log(`\n  Verification Summary:`)
-    console.log(`    Index: ${indexVerified ? '✓ VERIFIED' : '✗ FAILED'}`)
-    console.log(`    Location claims: ${locationClaimsVerified ? '✓ VERIFIED' : '✗ FAILED'}`)
-    console.log(`    Space information: ${allShardsHaveSpace ? '✓ VERIFIED' : '✗ FAILED'}`)
-    console.log(`    Shards without space: ${shardsWithoutSpace.length}/${upload.shards.length}`)
-    console.log(`    Overall: ${success ? '✓ PASSED' : '✗ FAILED'}`)
-    
-    let details = ''
-    if (!success) {
-      const issues = []
-      if (!indexVerified) issues.push('index claim missing')
-      if (!locationClaimsVerified) issues.push('location claims missing')
-      if (!allShardsHaveSpace) issues.push(`${shardsWithoutSpace.length} shards missing space info`)
-      details = issues.join(', ')
-    }
-    
-    return {
-      success,
-      indexVerified,
-      locationClaimsVerified,
-      allShardsHaveSpace,
-      shardsWithoutSpace,
-      details: details || 'All verification checks passed',
-    }
-  } catch (error) {
-    console.error(`    ✗ Verification failed: ${error.message}`)
-    return {
-      success: false,
-      indexVerified: false,
-      locationClaimsVerified: false,
-      allShardsHaveSpace: false,
-      shardsWithoutSpace: upload.shards,
-      details: `Verification error: ${error.message}`,
-    }
+    return { success: false, error: error.message }
   }
 }

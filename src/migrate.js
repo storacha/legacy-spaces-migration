@@ -91,11 +91,23 @@ async function loadCustomersFromFile(filepath) {
  * @param {boolean} options.verifyOnly - If true, only verify migration status without making changes
  */
 async function migrateUpload(upload, options = {}) {
-  console.log(`\n${'='.repeat(70)}`)
-  console.log(`📦 Migrating Upload: ${upload.root}`)
-  console.log(`   Space: ${upload.space}`)
-  console.log(`   Shards: ${upload.shards.length}`)
-  console.log('='.repeat(70))
+  const { uploadNumber, totalUploads } = options
+  
+  // Add spacing before each upload
+  if (uploadNumber && uploadNumber > 1) {
+    console.log('\n')
+  }
+  
+  console.log('━'.repeat(70))
+  if (uploadNumber && totalUploads) {
+    console.log(`[${uploadNumber}/${totalUploads}] MIGRATING UPLOAD`)
+  } else {
+    console.log(`MIGRATING UPLOAD`)
+  }
+  console.log('━'.repeat(70))
+  console.log(`Root:   ${upload.root}`)
+  console.log(`Space:  ${upload.space}`)
+  console.log(`Shards: ${upload.shards.length}`)
   
   try {
     // If verify-only mode, skip to verification
@@ -113,21 +125,20 @@ async function migrateUpload(upload, options = {}) {
     }
     
     // Step 1: Check what migration steps are needed
-    console.log(`\n1) Checking migration status...`)
+    console.log(`\nSTEP 1: Analyze Migration Status ${'─'.repeat(35)}`)
     const status = await checkMigrationNeeded(upload)
     
-    console.log(`\n::: Migration Status:::`)
-    console.log(`   Index: ${status.hasIndexClaim ? '✓ EXISTS' : '✗ MISSING'}`)
-    console.log(`   Location claims: ${status.hasLocationClaim ? '✓ EXISTS' : '✗ MISSING'}`)
+    console.log(`  Index claim:           ${status.hasIndexClaim ? '✓ exists' : '✗ missing'}`)
+    console.log(`  Location claims:       ${status.hasLocationClaim ? `✓ exists (${upload.shards.length} shards)` : '✗ missing'}`)
     if (status.hasLocationClaim) {
-      console.log(`   Location has space: ${status.locationHasSpace ? '✓ YES' : '✗ NO'}`)
+      console.log(`  Space information:     ${status.locationHasSpace ? '✓ present' : '✗ missing'}`)
     }
-    console.log(`   Shards needing location claims: ${status.shardsNeedingLocationClaims.length}/${upload.shards.length}`)
     
-    console.log(`\n!!! Actions Required!!!`)
-    console.log(`   ${status.needsIndexGeneration ? '☐' : '✓'} Generate and register index`)
-    console.log(`   ${status.needsLocationClaims ? '☐' : '✓'} Republish location claims with space`)
-    console.log(`   ${status.needsGatewayAuth ? '☐' : '✓'} Create gateway authorization`)
+    console.log(`\n  Actions needed:`)
+    console.log(`    ${status.needsIndexGeneration ? '☐' : '✓'} Index generation and registration`)
+    console.log(`    ${status.needsLocationClaims ? '☐' : '✓'} Location claims with space information`)
+    console.log(`    ${status.needsGatewayAuth ? '☐' : '✓'} Gateway authorization`)
+    console.log(`\n  Result: ✓ COMPLETE`)
     
     // If nothing needs to be done, we're done!
     if (!status.needsIndexGeneration && 
@@ -148,14 +159,17 @@ async function migrateUpload(upload, options = {}) {
     // Step 2: Build and register index
     const shouldRunIndex = !options.testMode || options.testMode === 'index'
     
+    console.log(`\nSTEP 2: Generate and Register Index ${'─'.repeat(33)}`)
     if (status.needsIndexGeneration && shouldRunIndex) {
-      console.log(`\n2) Building and registering index...`)
       const result = await buildAndMigrateIndex({ upload })
       shardsWithSizes = result.shards
       migrationSpace = result.migrationSpace
       indexCID = result.indexCID
-      console.log(`   ✅ Index created: ${indexCID}`)
-      console.log(`   ✅ Migration space: ${migrationSpace}`)
+      console.log(`  Building index:        ✓ complete (${upload.shards.length} entries)`)
+      console.log(`  Uploading blob:        ✓ uploaded`)
+      console.log(`  Registering index:     ✓ registered`)
+      console.log(`  Index CID:             ${indexCID}`)
+      console.log(`\n  Result: ✓ COMPLETE`)
       
       // If test mode, stop here
       if (options.testMode === 'index') {
@@ -171,30 +185,31 @@ async function migrateUpload(upload, options = {}) {
         }
       }
     } else if (status.needsIndexGeneration) {
-      console.log(`\n⏭  Skipping index generation (test mode: ${options.testMode})`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Test mode (${options.testMode})`)
     } else {
-      console.log(`\n⏭  Index already exists, skipping`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Index already exists`)
     }
     
     // Step 3: Republish location claims
     const shouldRunLocationClaims = !options.testMode || options.testMode === 'location-claims'
     
+    console.log(`\nSTEP 3: Republish Location Claims ${'─'.repeat(34)}`)
     if (status.needsLocationClaims && shouldRunLocationClaims) {
-      console.log(`\n3)  Republishing location claims with space...`)
+      console.log(`  Shards to republish:   ${status.shardsNeedingLocationClaims.length}`)
+      
+      // Use the original user's space for location claims (for egress billing)
       await republishLocationClaims({
-        space: upload.space,
+        space: upload.space,  // Original space, not migration space
         shards: status.shardsNeedingLocationClaims,
         shardsWithSizes, // Reuse from step 2 if available
       })
-      console.log(`   ✅ Location claims republished for ${status.shardsNeedingLocationClaims.length} shards`)
+      console.log(`  Publishing claims:     ✓ complete (${status.shardsNeedingLocationClaims.length}/${status.shardsNeedingLocationClaims.length})`)
+      console.log(`\n  Result: ✓ COMPLETE`)
       
-      // Re-register the index to notify the indexing service about new location claims
-      if (status.hasIndexClaim && indexCID) {
-        console.log(`\n   Re-registering index to update indexing service...`)
-        const indexCIDParsed = typeof indexCID === 'string' ? CID.parse(indexCID) : indexCID
-        await registerIndex({ upload, indexCID: indexCIDParsed })
-        console.log(`   ✓ Index re-registered`)
-      }
+      // Note: We don't need to re-register the index. The indexing service will
+      // automatically pick up the new location claims we just published.
       
       // If test mode, stop here
       if (options.testMode === 'location-claims') {
@@ -209,20 +224,28 @@ async function migrateUpload(upload, options = {}) {
         }
       }
     } else if (status.needsLocationClaims) {
-      console.log(`\n⏭  Skipping location claims (test mode: ${options.testMode})`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Test mode (${options.testMode})`)
     } else {
-      console.log(`\n⏭  Location claims already have space, skipping`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Location claims already have space information`)
     }
     
     // Step 4: Create gateway authorization
     const shouldRunGatewayAuth = !options.testMode || options.testMode === 'gateway-auth'
+    let gatewayAuthResult = null
     
+    console.log(`\nSTEP 4: Create Gateway Authorization ${'─'.repeat(32)}`)
     if (status.needsGatewayAuth && shouldRunGatewayAuth) {
-      console.log(`\n4)  Creating gateway authorization...`)
-      await createGatewayAuth({
+      gatewayAuthResult = await createGatewayAuth({
         space: upload.space,
       })
-      console.log(`   ✅ Gateway authorization created (or already exists)`)
+      
+      if (gatewayAuthResult.success) {
+        console.log(`\n  Result: ✓ COMPLETE`)
+      } else {
+        console.log(`\n  Result: ✗ FAILED`)
+      }
       
       // If test mode, stop here
       if (options.testMode === 'gateway-auth') {
@@ -236,23 +259,20 @@ async function migrateUpload(upload, options = {}) {
         }
       }
     } else if (status.needsGatewayAuth) {
-      console.log(`\n⏭  Skipping gateway auth (test mode: ${options.testMode})`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Test mode (${options.testMode})`)
+      // Mark as null so verification knows it was skipped
+      gatewayAuthResult = null
     } else {
-      console.log(`\n⏭  Gateway authorization already exists, skipping`)
+      console.log(`  Status: ⏭  SKIPPED`)
+      console.log(`  Reason: Gateway authorization already exists`)
+      // If we're skipping because it already exists, mark it as successful
+      gatewayAuthResult = { success: true }
     }
     
     // Step 5: Verify migration completed successfully
-    console.log(`\n5) Verifying migration...`)
-    const verificationResult = await verifyMigration({ upload })
-    
-    if (!verificationResult.success) {
-      console.error(`\n⚠️  Verification failed: ${verificationResult.details}`)
-      console.error(`   Migration may need to be retried`)
-    }
-    
-    console.log(`\n${'='.repeat(70)}`)
-    console.log(`${verificationResult.success ? '✅' : '⚠️'}  Migration ${verificationResult.success ? 'complete' : 'completed with issues'} for ${upload.root}`)
-    console.log('='.repeat(70))
+    console.log(`\nSTEP 5: Verify Migration ${'─'.repeat(43)}`)
+    const verificationResult = await verifyMigration({ upload, gatewayAuthResult })
     
     return {
       success: verificationResult.success,
@@ -263,6 +283,7 @@ async function migrateUpload(upload, options = {}) {
       shardsRepublished: status.shardsNeedingLocationClaims.length,
       status,
       verification: verificationResult,
+      error: verificationResult.success ? undefined : verificationResult.details,
     }
     
   } catch (error) {
@@ -381,11 +402,12 @@ async function runMigrationMode(values) {
     }
     
     processed++
-    console.log(`\n[${processed}/${limit}]`)
     
     const result = await migrateUpload(upload, {
       testMode,
       verifyOnly,
+      uploadNumber: processed,
+      totalUploads: limit,
     })
     
     results.push(result)
@@ -401,9 +423,9 @@ async function runMigrationMode(values) {
   
   // Print summary
   console.log()
-  console.log('='.repeat(70))
-  console.log('Migration Summary')
-  console.log('='.repeat(70))
+  console.log('━'.repeat(70))
+  console.log('📈 MIGRATION SUMMARY')
+  console.log('━'.repeat(70))
   
   const successful = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success).length
@@ -411,24 +433,50 @@ async function runMigrationMode(values) {
   const testModeResults = results.filter(r => r.testMode).length
   const verifyOnlyResults = results.filter(r => r.verifyOnly).length
   
-  console.log(`Total processed: ${results.length}`)
-  console.log(`Successful: ${successful}`)
-  console.log(`Already migrated: ${alreadyMigrated}`)
+  const successRate = results.length > 0 ? Math.round((successful / results.length) * 100) : 0
+  const failureRate = results.length > 0 ? Math.round((failed / results.length) * 100) : 0
+  
+  console.log(`Total processed:     ${results.length}`)
+  console.log(`✓ Successful:        ${successful} (${successRate}%)`)
+  console.log(`✗ Failed:            ${failed} (${failureRate}%)`)
+  console.log(`⏭  Already migrated: ${alreadyMigrated}`)
+  
   if (verifyOnly) {
-    console.log(`Verified: ${verifyOnlyResults}`)
-    console.log(`Verification passed: ${results.filter(r => r.verifyOnly && r.success).length}`)
-    console.log(`Verification failed: ${results.filter(r => r.verifyOnly && !r.success).length}`)
+    const verifyPassed = results.filter(r => r.verifyOnly && r.success).length
+    const verifyFailed = results.filter(r => r.verifyOnly && !r.success).length
+    console.log(`\nVerification Results:`)
+    console.log(`  Total verified:    ${verifyOnlyResults}`)
+    console.log(`  ✓ Passed:          ${verifyPassed}`)
+    console.log(`  ✗ Failed:          ${verifyFailed}`)
   } else if (testMode) {
-    console.log(`Test mode (${testMode}): ${testModeResults}`)
+    console.log(`\nTest mode (${testMode}): ${testModeResults}`)
   }
-  console.log(`Failed: ${failed}`)
   
   if (failed > 0) {
     console.log()
-    console.log('Failed uploads:')
+    console.log(`Failed Uploads (${failed}):`)
     results.filter(r => !r.success).forEach(r => {
-      console.log(`  ❌ ${r.upload}: ${r.error}`)
+      console.log(`  ✗ ${r.upload}`)
+      console.log(`    └─ ${r.error}`)
     })
+    
+    // Step failure breakdown
+    const stepFailures = {}
+    results.filter(r => !r.success && r.verification).forEach(r => {
+      const details = r.verification.details || r.error
+      if (details) {
+        stepFailures[details] = (stepFailures[details] || 0) + 1
+      }
+    })
+    
+    if (Object.keys(stepFailures).length > 0) {
+      console.log()
+      console.log('Failure Breakdown:')
+      Object.entries(stepFailures).forEach(([step, count]) => {
+        const percentage = Math.round((count / failed) * 100)
+        console.log(`  ${step}: ${count} upload(s) (${percentage}% of failures)`)
+      })
+    }
   }
   
   // Save results to file

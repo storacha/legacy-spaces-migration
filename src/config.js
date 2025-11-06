@@ -18,8 +18,10 @@ const ENVIRONMENTS = {
     contentClaims: 'https://claims.web3.storage',
     claimsDID: 'did:web:claims.web3.storage',
     uploadService: 'https://up.storacha.network',
+    uploadServiceDID: 'did:web:up.storacha.network',
     gatewayService: 'https://gateway.storacha.network',
     gatewayDID: 'did:web:w3s.link',
+    storageProviders: ['did:web:up.storacha.network', 'did:web:web3.storage'],
   },
   staging: {
     region: 'us-east-2',
@@ -30,8 +32,10 @@ const ENVIRONMENTS = {
     contentClaims: 'https://staging.claims.web3.storage',
     claimsDID: 'did:web:staging.claims.web3.storage',
     uploadService: 'https://staging.up.storacha.network',
+    uploadServiceDID: 'did:web:staging.up.storacha.network',
     gatewayService: 'https://gateway.storacha.network',
-    gatewayDID: 'did:web:staging.w3s.link',
+    gatewayDID: 'did:web:w3s.link',
+    storageProviders: ['did:web:staging.web3.storage', 'did:web:staging.up.storacha.network'],
   },
 }
 
@@ -74,7 +78,9 @@ export const config = {
     contentClaims: process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
     claimsDID: env.claimsDID,
     uploadService: process.env.UPLOAD_SERVICE_URL || env.uploadService,
+    uploadServiceDID: process.env.UPLOAD_SERVICE_DID || env.uploadServiceDID,
     gatewayService: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
+    storageProviders: env.storageProviders, // Provider DIDs for querying consumer table
   },
   
   gateway: {
