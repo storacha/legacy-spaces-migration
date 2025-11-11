@@ -121,6 +121,7 @@ async function migrateUpload(upload, options = {}) {
         upload: upload.root,
         space: upload.space,
         verification: verificationResult,
+        error: verificationResult.success ? undefined : verificationResult.details,
       }
     }
     
@@ -562,8 +563,11 @@ async function main() {
   console.log('='.repeat(50))
   console.log(`  Environment: ${config.environment}`)
   console.log(`  AWS Region: ${config.aws.region}`)
-  console.log(`  Upload Service: ${config.services.uploadService}`)
-  console.log(`  Upload Table: ${config.tables.upload}`)
+  console.log(`  Upload Service: ${config.services.uploadServiceURL} (${config.services.uploadServiceDID})`)
+  console.log(`  Indexer Service: ${config.services.indexingServiceURL}`)
+  console.log(`  Claims Service: ${config.services.contentClaimsServiceURL} (${config.services.claimsServiceDID})`)
+  console.log(`  Gateway Service: ${config.services.gatewayServiceURL} (${config.services.gatewayServiceDID})`)
+  console.log(`  Storage Providers: ${config.services.storageProviders.join(', ')}`)
   console.log('='.repeat(50))
   console.log()
   

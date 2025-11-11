@@ -16,11 +16,11 @@ const ENVIRONMENTS = {
     carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link',
     indexingService: 'https://indexer.storacha.network',
     contentClaims: 'https://claims.web3.storage',
-    claimsDID: 'did:web:claims.web3.storage',
+    claimsServiceDID: 'did:web:claims.web3.storage',
     uploadService: 'https://up.storacha.network',
     uploadServiceDID: 'did:web:up.storacha.network',
-    gatewayService: 'https://gateway.storacha.network',
-    gatewayDID: 'did:web:w3s.link',
+    gatewayService: 'https://storacha.link',
+    gatewayServiceDID: 'did:web:w3s.link',
     storageProviders: ['did:web:up.storacha.network', 'did:web:web3.storage'],
   },
   staging: {
@@ -30,11 +30,12 @@ const ENVIRONMENTS = {
     carparkPublicUrl: 'https://carpark-staging-0.r2.w3s.link',
     indexingService: 'https://staging.indexer.storacha.network',
     contentClaims: 'https://staging.claims.web3.storage',
-    claimsDID: 'did:web:staging.claims.web3.storage',
+    claimsServiceDID: 'did:web:staging.claims.web3.storage',
     uploadService: 'https://staging.up.storacha.network',
     uploadServiceDID: 'did:web:staging.up.storacha.network',
-    gatewayService: 'https://gateway.storacha.network',
-    gatewayDID: 'did:web:w3s.link',
+    gatewayService: 'https://freeway-fforbeck.protocol-labs.workers.dev',
+    // gatewayService: 'https://gateway.storacha.network',
+    gatewayServiceDID: 'did:web:staging.w3s.link',
     storageProviders: ['did:web:staging.web3.storage', 'did:web:staging.up.storacha.network'],
   },
 }
@@ -74,17 +75,14 @@ export const config = {
   },
   
   services: {
-    indexingService: process.env.INDEXING_SERVICE_URL || env.indexingService,
-    contentClaims: process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
-    claimsDID: env.claimsDID,
-    uploadService: process.env.UPLOAD_SERVICE_URL || env.uploadService,
+    indexingServiceURL: process.env.INDEXING_SERVICE_URL || env.indexingService,
+    contentClaimsServiceURL: process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
+    claimsServiceDID: process.env.CLAIMS_SERVICE_DID || env.claimsServiceDID,
+    uploadServiceURL: process.env.UPLOAD_SERVICE_URL || env.uploadService,
     uploadServiceDID: process.env.UPLOAD_SERVICE_DID || env.uploadServiceDID,
-    gatewayService: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
+    gatewayServiceURL: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
+    gatewayServiceDID: process.env.GATEWAY_SERVICE_DID || env.gatewayServiceDID,
     storageProviders: env.storageProviders, // Provider DIDs for querying consumer table
-  },
-  
-  gateway: {
-    did: process.env.GATEWAY_DID || env.gatewayDID,
   },
   
   storage: {
@@ -101,10 +99,11 @@ export const config = {
   
   credentials: {
     // Service private key for publishing to upload service
-    servicePrivateKey: process.env.SERVICE_PRIVATE_KEY,
-    serviceDID: process.env.SERVICE_DID || 'did:web:up.storacha.network',
+    uploadServicePrivateKey: process.env.SERVICE_PRIVATE_KEY,
     // Claims service private key for publishing location claims
     claimsServicePrivateKey: process.env.CLAIMS_SERVICE_PRIVATE_KEY,
+    // Gateway private key for publishing delegations
+    gatewayPrivateKey: process.env.GATEWAY_PRIVATE_KEY,
   },
   
   admin: {
@@ -147,5 +146,35 @@ export async function getClaimsSigner() {
 
   // Parse the private key and override with the did:web identity from environment config
   const claimsKeyPair = await Signer.parse(config.credentials.claimsServicePrivateKey)
-  return claimsKeyPair.withDID(config.services.claimsDID)
+  return claimsKeyPair.withDID(config.services.claimsServiceDID)
+}
+
+
+/**
+ * Get the upload service signer with the correct did:web identity
+ * @returns {Promise<import('@ucanto/interface').Signer>}
+ */
+export async function getUploadServiceSigner() {
+  if (!config.credentials.uploadServicePrivateKey) {
+    throw new Error('SERVICE_PRIVATE_KEY not configured')
+  }
+
+  // Parse the private key and override with the did:web identity from environment config
+  const uploadKeyPair = await Signer.parse(config.credentials.uploadServicePrivateKey)
+  return uploadKeyPair.withDID(config.services.uploadServiceDID)
+}
+  
+
+/**
+ * Get the gateway signer with the correct did:web identity
+ * @returns {Promise<import('@ucanto/interface').Signer>}
+ */
+export async function getGatewaySigner() {
+  if (!config.credentials.gatewayPrivateKey) {
+    throw new Error('GATEWAY_PRIVATE_KEY not configured')
+  }
+
+  // Parse the private key and override with the did:web identity from environment config
+  const gatewayKeyPair = await Signer.parse(config.credentials.gatewayPrivateKey)
+  return gatewayKeyPair.withDID(config.services.gatewayServiceDID)
 }
