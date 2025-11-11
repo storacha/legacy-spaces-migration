@@ -11,6 +11,7 @@
 import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
 import * as Signer from '@ucanto/principal/ed25519'
 import * as ed25519 from '@ucanto/principal/ed25519'
+import { DID } from '@ucanto/core'
 import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
 import * as HTTP from '@ucanto/transport/http'
@@ -25,13 +26,12 @@ import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
-import { DID } from '@ucanto/core'
 import {
   getOrCreateMigrationSpaceForCustomer,
   delegateMigrationSpaceToCustomer,
   generateDAGIndex,
 } from './migration-utils.js'
-import { config, getClaimsSigner } from '../config.js'
+import { config, getClaimsSigner, getGatewaySigner, getUploadServiceSigner } from '../config.js'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -134,15 +134,11 @@ export async function buildAndMigrateIndex({ upload }) {
   console.log(`    Original space: ${upload.space}`)
   console.log(`    Content root: ${upload.root}`)
   
-  if (!config.credentials.servicePrivateKey) {
-    throw new Error('SERVICE_PRIVATE_KEY not configured')
-  }
-
   // Generate sharded DAG index for the content
   const { indexBytes, indexCID, indexDigest } = await generateDAGIndex(upload)
   
-  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
-  const serviceURL = new URL(config.services.uploadService)
+  const serviceSigner = await getUploadServiceSigner()
+  const serviceURL = new URL(config.services.uploadServiceURL)
   const connection = connect({
     id: serviceSigner,
     codec: CAR.outbound,
@@ -255,12 +251,8 @@ export async function registerIndex({ upload, indexCID }) {
   console.log(`    - upload.space: ${upload.space} (type: ${typeof upload.space})`)
   console.log(`    - indexCID: ${indexCID} (type: ${typeof indexCID})`)
   
-  if (!config.credentials.servicePrivateKey) {
-    throw new Error('SERVICE_PRIVATE_KEY not configured')
-  }
-
-  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
-  const serviceURL = new URL(config.services.uploadService)
+  const serviceSigner = await getUploadServiceSigner()
+  const serviceURL = new URL(config.services.uploadServiceURL)
   const connection = connect({
     id: serviceSigner,
     codec: CAR.outbound,
@@ -268,7 +260,6 @@ export async function registerIndex({ upload, indexCID }) {
   })
   
   // Get migration space for this upload
-  console.log(`    DEBUG: About to call getCustomerForSpace with: ${upload.space}`)
   const customer = await getCustomerForSpace(upload.space)
   if (!customer) {
     throw new Error(`No customer found for space ${upload.space}`)
@@ -276,28 +267,15 @@ export async function registerIndex({ upload, indexCID }) {
   
   const { space: migrationSpace, spaceDID: migrationSpaceDID } = await getOrCreateMigrationSpaceForCustomer(customer)
   
-  console.log(`    DEBUG: migrationSpace type:`, typeof migrationSpace, migrationSpace?.constructor?.name)
-  console.log(`    DEBUG: migrationSpaceDID:`, migrationSpaceDID)
-  console.log(`    DEBUG: has signer:`, !!migrationSpace?.signer)
-  
   // Register index via space/index/add (publishes assert/index claim)
   // Get the signer from the migration space
   const spaceSigner = migrationSpace.signer || migrationSpace
-  
-  console.log(`    DEBUG: config.services:`, JSON.stringify(config.services, null, 2))
-  console.log(`    DEBUG: uploadServiceDID from config:`, config.services.uploadServiceDID)
-  
   if (!config.services.uploadServiceDID) {
     throw new Error('uploadServiceDID not configured in config.services')
   }
   
   // Parse the upload service DID for the audience
-  const { DID } = await import('@ucanto/core')
   const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
-  
-  console.log(`    DEBUG: parsed uploadServiceDID:`, uploadServiceDID.did())
-  console.log(`    DEBUG: spaceSigner DID:`, spaceSigner.did())
-  
   let result
   try {
     result = await Index.add(
@@ -311,12 +289,10 @@ export async function registerIndex({ upload, indexCID }) {
       { connection }
     )
   } catch (error) {
-    console.log(`    DEBUG: Index.add threw error:`, error.message)
-    console.log(`    DEBUG: Error cause:`, JSON.stringify(error.cause, null, 2))
+    console.error(`Index.add threw error:`, error.message)
     throw error
   }
   
-  console.log(`    DEBUG: Index.add result:`, JSON.stringify(result, null, 2))
   console.log(`    Index registration result:`, result.out.ok ? '✓ Success' : `✗ Error: ${JSON.stringify(result.out.error)}`)
   
   if (result.out.error) {
@@ -344,7 +320,7 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
   // Get claims service signer with the correct did:web identity
   const claimsSigner = await getClaimsSigner()
   
-  const claimsServiceURL = new URL(config.services.contentClaims)
+  const claimsServiceURL = new URL(config.services.contentClaimsServiceURL)
   const claimsConnection = connect({
     id: claimsSigner,
     codec: CAR.outbound,
@@ -428,21 +404,18 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
  * @returns {Promise<void>}
  */
 export async function createGatewayAuth({ space }) {
-  if (!config.credentials.servicePrivateKey) {
-    throw new Error('SERVICE_PRIVATE_KEY not configured')
-  }
+  console.log(`  Creating gateway authorization...`)
 
-  // Setup service signer and gateway connection
-  const serviceSigner = await Signer.parse(config.credentials.servicePrivateKey)
-  const gatewayServiceURL = new URL(config.services.gatewayService)
+  // Setup gateway signer and connection
+  const gatewaySigner = await getGatewaySigner()
   const gatewayConnection = connect({
-    id: serviceSigner,
+    id: gatewaySigner,  // Connect as gateway
     codec: CAR.outbound,
-    channel: HTTP.open({ url: gatewayServiceURL })
+    channel: HTTP.open({ url: new URL(config.services.gatewayServiceURL) })
   })
   
   // Gateway DID (audience for the delegation)
-  const gatewayDID = config.gateway.did
+  const gatewayDID = config.services.gatewayServiceDID
   
   // Create principal object for ucanto
   const gatewayPrincipal = {
@@ -454,51 +427,226 @@ export async function createGatewayAuth({ space }) {
     // This grants the gateway the ability to serve content from this space
     const delegation = await SpaceCapabilities.contentServe.delegate({
       issuer: Absentee.from({ id: space }),
-      audience: gatewayPrincipal,  // Principal with did() method
+      audience: gatewayPrincipal,
       with: space,
       nb: {},  // No additional caveats - allows serving all content
       expiration: Infinity,
     })
-    console.log(`  Delegation created:    ✓ ${delegation.cid}`)
+    console.log(`    ✓ Delegation created: ${delegation.cid}`)
 
-    // Service attests the delegation (proves service authorized this)
+    // Gateway attests the delegation (gateway self-attests)
     const attestation = await UCAN.attest.delegate({
-      issuer: serviceSigner,
-      audience: serviceSigner,
-      with: serviceSigner.did(),
+      issuer: gatewaySigner,
+      audience: gatewayPrincipal,
+      with: gatewaySigner.did(),
       nb: { proof: delegation.cid },
       expiration: Infinity,
     })
-    console.log(`  Attestation created:   ✓ ${attestation.cid}`)
+    console.log(`    ✓ Attestation created: ${attestation.cid}`)
+
+    // Re-delegate a gateway-signed content/serve delegation that carries
+    // the Absentee delegation + attestation as its proofs.
+    const contentDelegation = await SpaceCapabilities.contentServe.delegate({
+      issuer: gatewaySigner,
+      audience: gatewayPrincipal,
+      with: space,
+      nb: {},
+      proofs: [delegation, attestation],
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Gateway-signed content delegation: ${contentDelegation.cid}`)
+
+    // Create Absentee access delegation - space delegates access/delegate to gateway
+    const accessDelegation = await Access.delegate.delegate({
+      issuer: Absentee.from({ id: space }),
+      audience: gatewayPrincipal,
+      with: space,
+      nb: {},
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Access delegation created: ${accessDelegation.cid}`)
+
+    // Gateway attests the Absentee access delegation
+    const accessAttestation = await UCAN.attest.delegate({
+      issuer: gatewaySigner,
+      audience: gatewayPrincipal,
+      with: gatewaySigner.did(),
+      nb: { proof: accessDelegation.cid },
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Access attestation created: ${accessAttestation.cid}`)
 
     // Publish to gateway via access/delegate
-    // The service is publishing to its own KV store, so 'with' should be the service DID
-    const result = await Access.delegate.invoke({
-      issuer: serviceSigner,
-      audience: gatewayPrincipal,  // Principal with did() method
-      with: serviceSigner.did(),  // Service is acting on its own behalf, not the space's
+    const invocation = Access.delegate.invoke({
+      issuer: gatewaySigner,  // Gateway invokes (self-authorized)
+      audience: gatewayPrincipal,
+      with: space,
       nb: {
         delegations: {
-          [delegation.cid.toString()]: delegation.cid,
+          // Reference the block we're attaching
+          [contentDelegation.cid.toString()]: contentDelegation.cid,
         },
       },
-      proofs: [delegation, attestation],
-    }).execute(gatewayConnection)
+      // Proofs for the access/delegate invocation itself
+      proofs: [accessDelegation, accessAttestation],
+      // Facts must be an array containing an object mapping CID strings to CIDs
+      // This allows ucanto to link the attached blocks from contentDelegation
+      facts: [
+        [...contentDelegation.iterateIPLDBlocks()].reduce((fct, b) => {
+          fct[b.cid.toString()] = b.cid
+          return fct
+        }, {})
+      ],
+    })
 
+    // Attach the delegation CAR block
+    for (const b of contentDelegation.iterateIPLDBlocks()) {
+      invocation.attach(b)
+    }
+
+    const result = await invocation.execute(gatewayConnection)
     if (result.out.error) {
       throw new Error(
         `Failed to publish gateway delegation: ${result.out.error.message}`
       )
     }
     
-    console.log(`  Publishing to gateway: ✓ published`)
+    console.log(`    ✓ Gateway authorization published successfully`)
     return { success: true }
   } catch (error) {
+    console.error(error)
     // Log error but don't fail the migration - gateway auth can be retried independently
-    console.log(`  Publishing to gateway: ✗ FAILED`)
-    console.log(`\n  Error: ${error.message}`)
-    console.log(`\n  Note: This can be retried independently`)
+    console.error(`    ✗ Failed to create gateway authorization: ${error.message}`)
+    console.error(`    This can be retried independently without affecting other migration steps`)
     // Don't throw - allow migration to continue
-    return { success: false, error: error.message }
+    return { success: false }
+  }
+}
+
+/**
+ * Verify that all migration steps completed successfully
+ * 
+ * Re-queries the indexing service to confirm:
+ * 1. Index claim exists for the root CID
+ * 2. Location claims exist for all shards
+ * 3. Location claims include space information
+ * 
+ * Note: Gateway authorization verification is not included as it would require
+ * querying the gateway's CloudFlare KV store, which is not easily accessible
+ * from this script. We rely on the access/delegate invocation response to
+ * confirm the delegation was stored.
+ * 
+ * @param {object} params
+ * @param {object} params.upload - Upload record from Upload Table
+ * @param {string} params.upload.space - Space DID
+ * @param {string} params.upload.root - Root CID
+ * @param {string[]} params.upload.shards - Shard CIDs
+ * @returns {Promise<{
+ *   success: boolean,
+ *   indexVerified: boolean,
+ *   locationClaimsVerified: boolean,
+ *   allShardsHaveSpace: boolean,
+ *   shardsWithoutSpace: string[],
+ *   details: string
+ * }>}
+ */
+export async function verifyMigration({ upload }) {
+  console.log(`  Verifying migration...`)
+  console.log(`    Root: ${upload.root}`)
+  console.log(`    Space: ${upload.space}`)
+  console.log(`    Shards: ${upload.shards.length}`)
+  
+  try {
+    // Query indexing service to check current state
+    const indexingData = await queryIndexingService(upload.root)
+    
+    // Verify index claim exists
+    const indexVerified = indexingData.hasIndexClaim
+    console.log(`    Index claim: ${indexVerified ? '✓ EXISTS' : '✗ MISSING'}`)
+    
+    // Extract location claims
+    const locationClaims = indexingData.claims.filter(c => c.type === 'assert/location')
+    console.log(`    Location claims found: ${locationClaims.length}`)
+    
+    // Build map of shard multihash -> array of location claims
+    // There may be multiple claims per shard (old without space, new with space)
+    const shardLocationMap = new Map()
+    for (const claim of locationClaims) {
+      const contentMultihash = claim.content.multihash ?? Digest.decode(claim.content.digest)
+      const multihashStr = base58btc.encode(contentMultihash.bytes)
+      
+      if (!shardLocationMap.has(multihashStr)) {
+        shardLocationMap.set(multihashStr, [])
+      }
+      shardLocationMap.get(multihashStr).push(claim)
+    }
+    
+    // Check each shard
+    const shardsWithoutSpace = []
+    let allShardsHaveLocationClaims = true
+    
+    for (const shardCID of upload.shards) {
+      const cid = CID.parse(shardCID)
+      const multihashStr = base58btc.encode(cid.multihash.bytes)
+      const claims = shardLocationMap.get(multihashStr) || []
+      
+      if (claims.length === 0) {
+        allShardsHaveLocationClaims = false
+        shardsWithoutSpace.push(shardCID)
+        console.log(`    ✗ ${shardCID}: no location claim`)
+      } else {
+        // Check if ANY claim has space information matching this upload's space
+        const hasClaimWithSpace = claims.some(claim => 
+          claim.space != null && claim.space === upload.space
+        )
+        
+        if (hasClaimWithSpace) {
+          console.log(`    ✓ ${shardCID}: location claim with space`)
+        } else {
+          shardsWithoutSpace.push(shardCID)
+          console.log(`    ✗ ${shardCID}: location claim missing space field`)
+        }
+      }
+    }
+    
+    const locationClaimsVerified = allShardsHaveLocationClaims
+    const allShardsHaveSpace = shardsWithoutSpace.length === 0
+    const success = indexVerified && locationClaimsVerified && allShardsHaveSpace
+    
+    // Summary
+    console.log(`\n  Verification Summary:`)
+    console.log(`    Index: ${indexVerified ? '✓ VERIFIED' : '✗ FAILED'}`)
+    console.log(`    Location claims: ${locationClaimsVerified ? '✓ VERIFIED' : '✗ FAILED'}`)
+    console.log(`    Space information: ${allShardsHaveSpace ? '✓ VERIFIED' : '✗ FAILED'}`)
+    console.log(`    Shards without space: ${shardsWithoutSpace.length}/${upload.shards.length}`)
+    console.log(`    Overall: ${success ? '✓ PASSED' : '✗ FAILED'}`)
+    
+    let details = ''
+    if (!success) {
+      const issues = []
+      if (!indexVerified) issues.push('index claim missing')
+      if (!locationClaimsVerified) issues.push('location claims missing')
+      if (!allShardsHaveSpace) issues.push(`${shardsWithoutSpace.length} shards missing space info`)
+      details = issues.join(', ')
+    }
+    
+    return {
+      success,
+      indexVerified,
+      locationClaimsVerified,
+      allShardsHaveSpace,
+      shardsWithoutSpace,
+      details: details || 'All verification checks passed',
+    }
+  } catch (error) {
+    console.error(`    ✗ Verification failed: ${error.message}`)
+    return {
+      success: false,
+      indexVerified: false,
+      locationClaimsVerified: false,
+      allShardsHaveSpace: false,
+      shardsWithoutSpace: upload.shards,
+      details: `Verification error: ${error.message}`,
+    }
   }
 }
