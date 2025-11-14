@@ -87,8 +87,15 @@ export const config = {
   
   storage: {
     carparkBucket: process.env.CARPARK_BUCKET || env.carparkBucket,
-    delegationBucket: process.env.DELEGATION_BUCKET_NAME || `${env.tablePrefix}-delegation`,
+    // W3infra uses format: {name}-{stage}-{version} for S3 buckets
+    delegationBucket: process.env.DELEGATION_BUCKET_NAME || `delegation-${process.env.STORACHA_ENV || 'production'}-0`,
     carparkPublicUrl: process.env.CARPARK_PUBLIC_URL || env.carparkPublicUrl,
+    // R2 (Cloudflare) configuration for delegations (fallback if S3 not found)
+    r2DelegationBucket: process.env.R2_DELEGATION_BUCKET_NAME,
+    r2Endpoint: process.env.R2_ENDPOINT,
+    r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
+    r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    r2Region: process.env.R2_REGION || 'auto',
   },
   
   migration: {
