@@ -18,7 +18,7 @@ import * as HTTP from '@ucanto/transport/http'
 import { Absentee } from '@ucanto/principal'
 import * as UCAN from '@storacha/capabilities/ucan'
 import { Assert } from '@web3-storage/content-claims/capability'
-import { Access, Space as SpaceCapabilities } from '@storacha/capabilities'
+import { Access as AccessCapabilities, Space as SpaceCapabilities } from '@storacha/capabilities'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import * as Digest from 'multiformats/hashes/digest'
@@ -385,26 +385,10 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
 }
 
 /**
- * Create gateway authorization for a space using did:mailto intermediary pattern
+ * Create gateway authorization for a space using agent authorization pattern
  * 
- * Creates a delegation chain that grants the gateway permission to serve content from
- * the space. Uses existing space→account (did:mailto) delegations as the authorization
- * basis, avoiding issues with did:key and ucan/attest validation.
- * 
- * The delegation chain:
- * 1. Query existing space→account delegation from upload-service delegation store
- * 2. Create Absentee delegation: account (did:mailto) → gateway for space/content/serve
- * 3. Upload-service attests to the Absentee delegation's validity (ucan/attest)
- * 4. Publish to gateway via access/delegate invocation
- * 
- * This pattern leverages existing account delegations and works with ucanto's standard
- * validation flow (did:mailto works with ucan/attest, unlike did:key).
- * 
- * **Idempotency Note**: Calling this multiple times for the same space will create
- * multiple delegations in the KV store with different CIDs. The KV store key is
- * `${space}:${delegation.cid}`, so each invocation creates a new entry. This is safe
- * but not optimal. In a future iteration, we could check existing delegations via
- * the KV store API before creating new ones.
+ * **Idempotency Note**: Multiple calls create multiple KV entries with different CIDs.
+ * Safe but not optimal. Future improvement: check existing delegations before creating new ones.
  * 
  * @param {object} params
  * @param {string} params.space - Space DID
@@ -435,74 +419,80 @@ export async function createGatewayAuth({ space }) {
   }
 
   try {
+    // Find the space -> account delegation
     console.log(`    Querying space -> account delegation...`)
-    const spaceDelegation = await findDelegationByIssuer(space)
-    if (!spaceDelegation) {
+    const spaceAccessDelegation = await findDelegationByIssuer(space)
+    if (!spaceAccessDelegation) {
       console.log(`    ⏭  No space -> account delegation found for space: ${space}`)
-      console.log(`       Is this expected for legacy spaces?`)
+      console.log(`       Is expected for legacy spaces?`)
       console.log(`       Gateway authorization will be skipped for this space.`)
       return {
         ok: { skipped: true, reason: 'no-delegation-found' }
       }
     }
     
-    const accountDID = spaceDelegation.audience.did()
+    const accountDID = spaceAccessDelegation.audience.did()
     console.log(`    ✓ Found space -> account delegation: ${space} → ${accountDID}`)
 
-    const delegation = await SpaceCapabilities.contentServe.delegate({
-      issuer: Absentee.from({ id: accountDID }), // Account as Absentee issuer
-      audience: gatewayPrincipal,
+    const accessDelegation = await AccessCapabilities.access.delegate({
+      issuer: Absentee.from({ id: accountDID }), // Account as Absentee issuer (no signature)
+      audience: gatewayPrincipal, // Gateway is the "agent" receiving delegation
       with: space,
       nb: {},  // No additional caveats - allows serving all content
-      proofs: [spaceDelegation], // Proof that space delegated to account
+      proofs: [spaceAccessDelegation], // Proof that space delegated to account
       expiration: Infinity,
     })
-    console.log(`    ✓ Absentee content serve delegation created: ${delegation.cid}`)
+    console.log(`    ✓ Space access delegation (account → gateway): ${accessDelegation.cid}`)
 
-    // Step 3: Upload-service attests the delegation
-    const attestation = await UCAN.attest.delegate({
-      issuer: uploadServiceSigner,
-      audience: uploadServicePrincipal,
-      with: uploadServiceDID,
-      nb: { proof: delegation.cid },
-      expiration: Infinity,
-    })
-    console.log(`    ✓ Upload-service attestation created: ${attestation.cid}`)
-
-    // Step 4: Create access delegation for the invocation
-    // Upload-service delegates access/delegate capability to itself for this space
-    const accessDelegation = await Access.delegate.delegate({
-      issuer: uploadServiceSigner,
-      audience: uploadServicePrincipal,
+    // Create Absentee delegation (account → gateway)
+    // This is like the agent authorization flow where account delegates to agent
+    const contentServeDelegation = await SpaceCapabilities.contentServe.delegate({
+      issuer: Absentee.from({ id: accountDID }), // Account as Absentee issuer (no signature)
+      audience: gatewayPrincipal, // Gateway is the "agent" receiving delegation
       with: space,
-      nb: {},
+      nb: {},  // No additional caveats - allows serving all content
+      proofs: [spaceAccessDelegation], // Proof that space delegated to account
       expiration: Infinity,
     })
-    console.log(`    ✓ Access delegation created: ${accessDelegation.cid}`)
+    console.log(`    ✓ Content Serve delegation (account → gateway): ${contentServeDelegation.cid}`)
 
-    // Step 5: Publish to gateway via access/delegate
-    const invocation = Access.delegate.invoke({
-      issuer: uploadServiceSigner,
+    // Upload-service attests the delegation FOR the gateway
+    // This matches createSessionProofs pattern: attestation.audience = agent (gateway)
+    const attestation = await UCAN.attest.delegate({
+      issuer: gatewaySigner,
+      audience: gatewayPrincipal,  // Gateway is the audience (like agent in email flow)
+      with: gatewayDID,
+      nb: { proof: accessDelegation.cid },
+      expiration: Infinity,
+    })
+    console.log(`    ✓ Service attestation (for gateway): ${attestation.cid}`)
+
+    // Publish session proofs to gateway via access/delegate
+    const invocation = AccessCapabilities.delegate.invoke({
+      issuer: gatewaySigner,
       audience: gatewayPrincipal,
       with: space,
       nb: {
         delegations: {
-          [delegation.cid.toString()]: delegation.cid,
+          [contentServeDelegation.cid.toString()]: contentServeDelegation.cid,
         },
       },
-      proofs: [accessDelegation, attestation],
-      facts: [
-        [...delegation.iterateIPLDBlocks()].reduce((fct, b) => {
-          fct[b.cid.toString()] = b.cid
-          return fct
-        }, {})
+      proofs: [
+        accessDelegation,  // account → gateway (Absentee, no signature)
+        contentServeDelegation,  // account → gateway (Absentee, no signature)
+        attestation,  // upload-service attestation (for gateway)
       ],
+      // facts: [
+      //   [...attestation.iterateIPLDBlocks()].reduce((fct, b) => {
+      //     fct[b.cid.toString()] = b.cid
+      //     return fct
+      //   }, {}),
+      // ],
     })
 
-    // Attach delegation blocks
-    for (const b of delegation.iterateIPLDBlocks()) {
-      invocation.attach(b)
-    }
+    // for (const block of attestation.iterateIPLDBlocks()) {
+    //   invocation.attach(block)
+    // }
 
     const result = await invocation.execute(gatewayConnection)
     if (result.out.error) {
