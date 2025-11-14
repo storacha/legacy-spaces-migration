@@ -106,7 +106,7 @@ export const config = {
   
   credentials: {
     // Service private key for publishing to upload service
-    uploadServicePrivateKey: process.env.SERVICE_PRIVATE_KEY,
+    uploadServicePrivateKey: process.env.UPLOAD_SERVICE_PRIVATE_KEY,
     // Claims service private key for publishing location claims
     claimsServicePrivateKey: process.env.CLAIMS_SERVICE_PRIVATE_KEY,
     // Gateway private key for publishing delegations
