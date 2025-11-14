@@ -26,6 +26,7 @@ import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
+import { findDelegationByIssuer } from './tables/delegations-table.js'
 import {
   getOrCreateMigrationSpaceForCustomer,
   delegateMigrationSpaceToCustomer,
@@ -384,14 +385,20 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
 }
 
 /**
- * Create gateway authorization delegation for the space
+ * Create gateway authorization for a space using did:mailto intermediary pattern
  * 
- * Creates a `space/content/serve/*` delegation for legacy spaces that don't have
- * existing gateway authorizations. Uses the Absentee issuer pattern since we don't
- * have the space's private key.
+ * Creates a delegation chain that grants the gateway permission to serve content from
+ * the space. Uses existing space→account (did:mailto) delegations as the authorization
+ * basis, avoiding issues with did:key and ucan/attest validation.
  * 
- * The delegation is published to the gateway's KV store via `access/delegate` invocation.
- * The gateway will use this delegation to authorize content serving requests.
+ * The delegation chain:
+ * 1. Query existing space→account delegation from upload-service delegation store
+ * 2. Create Absentee delegation: account (did:mailto) → gateway for space/content/serve
+ * 3. Upload-service attests to the Absentee delegation's validity (ucan/attest)
+ * 4. Publish to gateway via access/delegate invocation
+ * 
+ * This pattern leverages existing account delegations and works with ucanto's standard
+ * validation flow (did:mailto works with ucan/attest, unlike did:key).
  * 
  * **Idempotency Note**: Calling this multiple times for the same space will create
  * multiple delegations in the KV store with different CIDs. The KV store key is
@@ -406,101 +413,94 @@ export async function republishLocationClaims({ space, shards, shardsWithSizes }
 export async function createGatewayAuth({ space }) {
   console.log(`  Creating gateway authorization...`)
 
-  // Setup gateway signer and connection
+  // Setup signers and connections
+  const uploadServiceSigner = await getUploadServiceSigner()
   const gatewaySigner = await getGatewaySigner()
   const gatewayConnection = connect({
-    id: gatewaySigner,  // Connect as gateway
+    id: uploadServiceSigner,  // Connect as upload-service to invoke access/delegate
     codec: CAR.outbound,
     channel: HTTP.open({ url: new URL(config.services.gatewayServiceURL) })
   })
   
   // Gateway DID (audience for the delegation)
   const gatewayDID = config.services.gatewayServiceDID
+  const uploadServiceDID = config.services.uploadServiceDID
   
-  // Create principal object for ucanto
+  // Create principal objects for ucanto
   const gatewayPrincipal = {
     did: () => gatewayDID
   }
+  const uploadServicePrincipal = {
+    did: () => uploadServiceDID
+  }
 
   try {
-    // Create delegation with Absentee issuer (space doesn't have private key)
-    // This grants the gateway the ability to serve content from this space
+    console.log(`    Querying space -> account delegation...`)
+    const spaceDelegation = await findDelegationByIssuer(space)
+    if (!spaceDelegation) {
+      console.log(`    ⏭  No space -> account delegation found for space: ${space}`)
+      console.log(`       Is this expected for legacy spaces?`)
+      console.log(`       Gateway authorization will be skipped for this space.`)
+      return {
+        ok: { skipped: true, reason: 'no-delegation-found' }
+      }
+    }
+    
+    const accountDID = spaceDelegation.audience.did()
+    console.log(`    ✓ Found space -> account delegation: ${space} → ${accountDID}`)
+
     const delegation = await SpaceCapabilities.contentServe.delegate({
-      issuer: Absentee.from({ id: space }),
+      issuer: Absentee.from({ id: accountDID }), // Account as Absentee issuer
       audience: gatewayPrincipal,
       with: space,
       nb: {},  // No additional caveats - allows serving all content
+      proofs: [spaceDelegation], // Proof that space delegated to account
       expiration: Infinity,
     })
-    console.log(`    ✓ Delegation created: ${delegation.cid}`)
+    console.log(`    ✓ Absentee content serve delegation created: ${delegation.cid}`)
 
-    // Gateway attests the delegation (gateway self-attests)
+    // Step 3: Upload-service attests the delegation
     const attestation = await UCAN.attest.delegate({
-      issuer: gatewaySigner,
-      audience: gatewayPrincipal,
-      with: gatewaySigner.did(),
+      issuer: uploadServiceSigner,
+      audience: uploadServicePrincipal,
+      with: uploadServiceDID,
       nb: { proof: delegation.cid },
       expiration: Infinity,
     })
-    console.log(`    ✓ Attestation created: ${attestation.cid}`)
+    console.log(`    ✓ Upload-service attestation created: ${attestation.cid}`)
 
-    // Re-delegate a gateway-signed content/serve delegation that carries
-    // the Absentee delegation + attestation as its proofs.
-    const contentDelegation = await SpaceCapabilities.contentServe.delegate({
-      issuer: gatewaySigner,
-      audience: gatewayPrincipal,
-      with: space,
-      nb: {},
-      proofs: [delegation, attestation],
-      expiration: Infinity,
-    })
-    console.log(`    ✓ Gateway-signed content delegation: ${contentDelegation.cid}`)
-
-    // Create Absentee access delegation - space delegates access/delegate to gateway
+    // Step 4: Create access delegation for the invocation
+    // Upload-service delegates access/delegate capability to itself for this space
     const accessDelegation = await Access.delegate.delegate({
-      issuer: Absentee.from({ id: space }),
-      audience: gatewayPrincipal,
+      issuer: uploadServiceSigner,
+      audience: uploadServicePrincipal,
       with: space,
       nb: {},
       expiration: Infinity,
     })
     console.log(`    ✓ Access delegation created: ${accessDelegation.cid}`)
 
-    // Gateway attests the Absentee access delegation
-    const accessAttestation = await UCAN.attest.delegate({
-      issuer: gatewaySigner,
-      audience: gatewayPrincipal,
-      with: gatewaySigner.did(),
-      nb: { proof: accessDelegation.cid },
-      expiration: Infinity,
-    })
-    console.log(`    ✓ Access attestation created: ${accessAttestation.cid}`)
-
-    // Publish to gateway via access/delegate
+    // Step 5: Publish to gateway via access/delegate
     const invocation = Access.delegate.invoke({
-      issuer: gatewaySigner,  // Gateway invokes (self-authorized)
+      issuer: uploadServiceSigner,
       audience: gatewayPrincipal,
       with: space,
       nb: {
         delegations: {
-          // Reference the block we're attaching
-          [contentDelegation.cid.toString()]: contentDelegation.cid,
+          [delegation.cid.toString()]: delegation.cid,
         },
       },
-      // Proofs for the access/delegate invocation itself
-      proofs: [accessDelegation, accessAttestation],
-      // Facts must be an array containing an object mapping CID strings to CIDs
-      // This allows ucanto to link the attached blocks from contentDelegation
+      proofs: [accessDelegation, attestation],
       facts: [
-        [...contentDelegation.iterateIPLDBlocks()].reduce((fct, b) => {
+        [...delegation.iterateIPLDBlocks()].reduce((fct, b) => {
           fct[b.cid.toString()] = b.cid
           return fct
         }, {})
       ],
     })
 
-    // Attach the delegation CAR block
-    for (const b of contentDelegation.iterateIPLDBlocks()) {
+    // Attach delegation blocks
+    for (const b of delegation.iterateIPLDBlocks()) {
       invocation.attach(b)
     }
 
