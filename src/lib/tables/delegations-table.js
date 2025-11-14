@@ -13,12 +13,13 @@ import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
 
 /**
- * Cached S3 client
+ * Cached S3 clients
  */
 let cachedS3Client = null
+let cachedR2Client = null
 
 /**
- * Get or create S3 client for delegation bucket
+ * Get or create S3 client for AWS S3
  * Caches the client to avoid creating multiple connections
  */
 function getS3Client() {
@@ -32,6 +33,24 @@ function getS3Client() {
     })
   }
   return cachedS3Client
+}
+
+/**
+ * Get or create R2 client for Cloudflare R2
+ * Caches the client to avoid creating multiple connections
+ */
+function getR2Client() {
+  if (!cachedR2Client) {
+    cachedR2Client = new S3Client({
+      region: config.storage.r2Region,
+      endpoint: config.storage.r2Endpoint,
+      credentials: {
+        accessKeyId: config.storage.r2AccessKeyId,
+        secretAccessKey: config.storage.r2SecretAccessKey,
+      },
+    })
+  }
+  return cachedR2Client
 }
 
 /**
@@ -63,7 +82,11 @@ export async function storeDelegations(delegations, options = {}) {
   }
 
   const dynamoClient = getDynamoClient()
-  const s3Client = getS3Client()
+  
+  // Use R2 if configured, otherwise S3
+  const useR2 = !!config.storage.r2DelegationBucket
+  const client = useR2 ? getR2Client() : getS3Client()
+  const bucketName = useR2 ? config.storage.r2DelegationBucket : config.storage.delegationBucket
 
   // Store delegation CAR bytes in S3/R2 (matching w3infra format)
   // Each delegation is encoded as a CAR file containing just that delegation
@@ -72,14 +95,14 @@ export async function storeDelegations(delegations, options = {}) {
     const carBytes = delegationsToBytes([delegation])
     
     const command = new PutObjectCommand({
-      Bucket: config.storage.delegationBucket,
+      Bucket: bucketName,
       Key: createDelegationsBucketKey(delegation.cid),  // /delegations/{cid-base32}.car
       Body: carBytes,
       ContentType: 'application/car',
     })
     
-    await s3Client.send(command)
-    console.log(`      ✓ Stored delegation CAR: ${createDelegationsBucketKey(delegation.cid)}`)
+    await client.send(command)
+    console.log(`      ✓ Stored delegation CAR to ${useR2 ? 'R2' : 'S3'}: ${createDelegationsBucketKey(delegation.cid)}`)
   }))
 
   // Index delegations in DynamoDB
@@ -143,28 +166,70 @@ export async function findDelegationByIssuer(spaceDID) {
   
   console.log(`      ✓ Found delegation from space: ${spaceDID} → ${item.audience}`)
 
-  // Fetch delegation CAR bytes from S3
-  const getCommand = new GetObjectCommand({
-    Bucket: config.storage.delegationBucket,
-    Key: createDelegationsBucketKey(link),
-  })
-
-  try {
-    const s3Object = await s3Client.send(getCommand)
-    const carBytes = await s3Object.Body.transformToByteArray()
-    
-    // Parse delegation from CAR bytes
-    const delegationsList = bytesToDelegations(carBytes)
-    const delegation = delegationsList.find(d => d.cid.equals(link))
-    
-    if (!delegation) {
-      throw new Error(`Delegation ${link} not found in CAR file`)
+  // Try R2 first (primary storage), fall back to S3 if not found
+  const key = createDelegationsBucketKey(link)
+  console.log(`      ✓ Fetching delegation from R2: ${key}`)
+  let carBytes
+  
+  // Try R2 first if configured (w3infra staging uses R2)
+  if (config.storage.r2DelegationBucket) {
+    try {
+      const r2Client = getR2Client()
+      const r2Command = new GetObjectCommand({
+        Bucket: config.storage.r2DelegationBucket,
+        Key: key,
+      })
+      const r2Object = await r2Client.send(r2Command)
+      carBytes = await r2Object.Body.transformToByteArray()
+      console.log(`      ✓ Fetched from R2: ${config.storage.r2DelegationBucket}`)
+    } catch (r2Error) {
+      // If R2 fails with NoSuchKey, try S3 fallback
+      if (r2Error.name === 'NoSuchKey') {
+        console.log(`      ℹ Not in R2, trying S3...`)
+        try {
+          const s3Command = new GetObjectCommand({
+            Bucket: config.storage.delegationBucket,
+            Key: key,
+          })
+          const s3Object = await s3Client.send(s3Command)
+          carBytes = await s3Object.Body.transformToByteArray()
+          console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
+        } catch (s3Error) {
+          console.error(`      ✗ Failed to fetch from both R2 and S3:`)
+          console.error(`        R2: ${r2Error.message}`)
+          console.error(`        S3: ${s3Error.message}`)
+          throw s3Error
+        }
+      } else {
+        // Other R2 errors (permissions, network, etc.)
+        console.error(`      ✗ Failed to fetch delegation ${link}:`, r2Error.message)
+        throw r2Error
+      }
     }
-
-    console.log(`        - ${delegation.issuer.did()} → ${delegation.audience.did()} (${delegation.capabilities[0]?.can})`)
-    return delegation
-  } catch (error) {
-    console.error(`      ✗ Failed to fetch delegation ${link}:`, error.message)
-    throw error
+  } else {
+    // No R2 configured, use S3 only
+    try {
+      const s3Command = new GetObjectCommand({
+        Bucket: config.storage.delegationBucket,
+        Key: key,
+      })
+      const s3Object = await s3Client.send(s3Command)
+      carBytes = await s3Object.Body.transformToByteArray()
+      console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
+    } catch (s3Error) {
+      console.error(`      ✗ Failed to fetch delegation ${link}:`, s3Error.message)
+      throw s3Error
+    }
   }
+  
+  // Parse delegation from CAR bytes
+  const delegationsList = bytesToDelegations(carBytes)
+  const delegation = delegationsList.find(d => d.cid.equals(link))
+  
+  if (!delegation) {
+    throw new Error(`Delegation ${link} not found in CAR file`)
+  }
+
+  console.log(`        - ${delegation.issuer.did()} → ${delegation.audience.did()} (${delegation.capabilities[0]?.can})`)
+  return delegation
 }
