@@ -4,10 +4,11 @@
  * Stores delegations in DynamoDB for indexing and S3/R2 for content.
  * Simplified version for migration - only supports putMany for now.
  */
-import { BatchWriteCommand } from '@aws-sdk/lib-dynamodb'
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { BatchWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
+import { PutObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { base32 } from 'multiformats/bases/base32'
-import { delegationsToBytes } from '@storacha/access/encoding'
+import { delegationsToBytes, bytesToDelegations } from '@storacha/access/encoding'
+import { parseLink } from '@ucanto/core'
 import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
 
@@ -100,4 +101,70 @@ export async function storeDelegations(delegations, options = {}) {
 
   await dynamoClient.send(batchWrite)
   console.log(`      ✓ Indexed ${delegations.length} delegation(s) in DynamoDB`)
+}
+
+/**
+ * Find a space→account delegation by issuer (space)
+ * 
+ * Spaces delegate authority to accounts (did:mailto). This delegation is signed
+ * by the space's private key and proves the account has authority over the space.
+ * Uses the 'issuer' global secondary index to find delegations where the space
+ * is the issuer and the account is the audience.
+ * 
+ * @param {string} spaceDID - The space DID to query (e.g., did:key:z6Mkk...)
+ * @returns {Promise<import('@ucanto/interface').Delegation | null>}
+ */
+export async function findDelegationByIssuer(spaceDID) {
+  const dynamoClient = getDynamoClient()
+  const s3Client = getS3Client()
+
+  // Query DynamoDB using issuer index - limit to 1 result
+  const queryCommand = new QueryCommand({
+    TableName: config.tables.delegation,
+    IndexName: 'issuer',
+    KeyConditionExpression: 'issuer = :issuer',
+    ExpressionAttributeValues: {
+      ':issuer': spaceDID,
+    },
+    ProjectionExpression: 'link, audience',
+    Limit: 1, // Only need one delegation
+  })
+
+  const response = await dynamoClient.send(queryCommand)
+  const items = response.Items ?? []
+
+  if (items.length === 0) {
+    console.log(`      ℹ No delegation found for issuer: ${spaceDID}`)
+    return null
+  }
+
+  const item = items[0]
+  const link = parseLink(item.link)
+  
+  console.log(`      ✓ Found delegation from space: ${spaceDID} → ${item.audience}`)
+
+  // Fetch delegation CAR bytes from S3
+  const getCommand = new GetObjectCommand({
+    Bucket: config.storage.delegationBucket,
+    Key: createDelegationsBucketKey(link),
+  })
+
+  try {
+    const s3Object = await s3Client.send(getCommand)
+    const carBytes = await s3Object.Body.transformToByteArray()
+    
+    // Parse delegation from CAR bytes
+    const delegationsList = bytesToDelegations(carBytes)
+    const delegation = delegationsList.find(d => d.cid.equals(link))
+    
+    if (!delegation) {
+      throw new Error(`Delegation ${link} not found in CAR file`)
+    }
+
+    console.log(`        - ${delegation.issuer.did()} → ${delegation.audience.did()} (${delegation.capabilities[0]?.can})`)
+    return delegation
+  } catch (error) {
+    console.error(`      ✗ Failed to fetch delegation ${link}:`, error.message)
+    throw error
+  }
 }
