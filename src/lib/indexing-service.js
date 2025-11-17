@@ -11,7 +11,7 @@ import { config } from '../config.js'
  */
 export function createIndexingServiceClient() {
   return new Client({
-    serviceURL: new URL(config.services.indexingService),
+    serviceURL: new URL(config.services.indexingServiceURL),
   })
 }
 
