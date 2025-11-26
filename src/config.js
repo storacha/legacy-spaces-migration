@@ -14,6 +14,7 @@ const ENVIRONMENTS = {
     tablePrefix: 'prod-w3infra',
     carparkBucket: 'carpark-prod-0',
     carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link',
+    claimsBucket: 'prod-content-claims-bucket-claimsv1bucketefd46802-1mqz6d8o7xw8',
     indexingService: 'https://indexer.storacha.network',
     contentClaims: 'https://claims.web3.storage',
     claimsServiceDID: 'did:web:claims.web3.storage',
@@ -28,6 +29,7 @@ const ENVIRONMENTS = {
     tablePrefix: 'staging-w3infra',
     carparkBucket: 'carpark-staging-0',
     carparkPublicUrl: 'https://carpark-staging-0.r2.w3s.link',
+    claimsBucket: 'staging-content-claims-buc-claimsv1bucketefd46802-1xx2brszve6t3',
     indexingService: 'https://staging.indexer.storacha.network',
     contentClaims: 'https://staging.claims.web3.storage',
     claimsServiceDID: 'did:web:staging.claims.web3.storage',
@@ -87,6 +89,7 @@ export const config = {
   
   storage: {
     carparkBucket: process.env.CARPARK_BUCKET || env.carparkBucket,
+    claimsBucket: process.env.CLAIMS_BUCKET || env.claimsBucket,
     // W3infra uses format: {name}-{stage}-{version} for S3 buckets
     delegationBucket: process.env.DELEGATION_BUCKET_NAME || `delegation-${process.env.STORACHA_ENV || 'production'}-0`,
     carparkPublicUrl: process.env.CARPARK_PUBLIC_URL || env.carparkPublicUrl,
