@@ -109,11 +109,55 @@ async function migrateUpload(upload, options = {}) {
   console.log(`Space:  ${upload.space}`)
   console.log(`Shards: ${upload.shards.length}`)
   
+  // If upload.shards is empty, extract original content shards from the index
+  if (upload.shards.length === 0) {
+    console.log(`\n⚠️  Upload has no shards in database`)
+    const { queryIndexingService } = await import('./lib/indexing-service.js')
+    const { CID } = await import('multiformats/cid')
+    
+    const indexingData = await queryIndexingService(upload.root)
+    
+    if (indexingData.hasIndexClaim) {
+      console.log(`   ✓ Index claim exists`)
+      console.log(`   Extracting original content shards from index...`)
+      
+      // Get the index from the query result
+      const indexes = Array.from(indexingData.indexes?.values() || [])
+      
+      if (indexes.length === 0) {
+        console.log(`   ✗ No index data returned`)
+        console.log(`   ⏭  Skipping shard resolution`)
+      } else {
+        // Extract shard digests from the index
+        const index = indexes[0]
+        const shardDigests = Array.from(index.shards.keys())
+        
+        // Convert digests to CIDs
+        const shardCIDs = shardDigests.map(digest => {
+          // Shards are stored as CIDs in the index
+          const cid = CID.decode(digest)
+          return cid.toString()
+        })
+        
+        upload.shards = shardCIDs
+        console.log(`   ✓ Extracted ${shardCIDs.length} original content shard(s) from index`)
+      }
+    } else {
+      console.log(`   ✗ No index claim found`)
+      console.log(`   ❌ Cannot migrate: upload has no shards and no index`)
+      throw new Error('Upload has no shards in database and no index claim - cannot migrate')
+    }
+  }
+  
   try {
     // If verify-only mode, skip to verification
     if (options.verifyOnly) {
       console.log(`\n>>> Verify-Only Mode: Checking migration status...`)
-      const verificationResult = await verifyMigration({ upload })
+      // Pass null for gatewayAuthResult to indicate it should be skipped in verify-only mode
+      const verificationResult = await verifyMigration({ 
+        upload,
+        gatewayAuthResult: null // null = skip gateway auth check
+      })
       
       return {
         success: verificationResult.success,
@@ -447,8 +491,20 @@ async function runMigrationMode(values) {
     const verifyFailed = results.filter(r => r.verifyOnly && !r.success).length
     console.log(`\nVerification Results:`)
     console.log(`  Total verified:    ${verifyOnlyResults}`)
-    console.log(`  ✓ Passed:          ${verifyPassed}`)
-    console.log(`  ✗ Failed:          ${verifyFailed}`)
+    if (verifyPassed > 0) {
+      console.log(`  ✅ Passed:         ${verifyPassed}`)
+    }
+    if (verifyFailed > 0) {
+      console.log(`  ❌ Failed:          ${verifyFailed}`)
+    }
+    
+    // If all passed, add celebration
+    if (verifyFailed === 0 && verifyPassed > 0) {
+      console.log()
+      console.log(`  ${'='.repeat(20)}`)
+      console.log(`  ✅ ALL VERIFICATIONS PASSED!!!`)
+      console.log(`  ${'='.repeat(20)}`)
+    }
   } else if (testMode) {
     console.log(`\nTest mode (${testMode}): ${testModeResults}`)
   }

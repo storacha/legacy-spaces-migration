@@ -9,7 +9,6 @@
  */
 
 import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
-import * as Signer from '@ucanto/principal/ed25519'
 import * as ed25519 from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
 import { connect } from '@ucanto/client'
@@ -30,6 +29,7 @@ import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
 import { findDelegationByIssuer } from './tables/delegations-table.js'
+import { verifyLocationClaimWithSpace } from './tables/content-claims-table.js'
 import {
   getOrCreateMigrationSpaceForCustomer,
   delegateMigrationSpaceToCustomer,
@@ -41,7 +41,6 @@ import {
   getGatewaySigner,
   getUploadServiceSigner
 } from '../config.js'
-import { content } from '@storacha/capabilities/space/blob'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -63,56 +62,50 @@ import { content } from '@storacha/capabilities/space/blob'
  * }>}
  */
 export async function checkMigrationNeeded (upload) {
-  // Query root CID - this returns index claim AND location claims for shards
+  // First, check if index claim exists by querying root CID
   const indexingData = await queryIndexingService(upload.root)
-
-  // Extract location claims from the response
-  const locationClaims = indexingData.claims.filter(
-    (c) => c.type === 'assert/location'
-  )
 
   console.log(
     `  Checking location claims for ${upload.shards.length} shards...`
   )
+
+  // Get all location claims from the root query
+  const allLocationClaims = indexingData.claims.filter(c => c.type === 'assert/location')
+  
   console.log(
-    `    Found ${locationClaims.length} location claims from indexing service`
+    `    Found ${allLocationClaims.length} location claims from indexing service`
   )
 
-  // Build map of shard multihash -> array of location claims
-  // There may be multiple claims per shard (old without space, new with space)
-  const shardLocationMap = new Map()
-
-  for (const claim of locationClaims) {
-    // Get the content multihash from the claim
-    const contentMultihash =
-      claim.content.multihash ?? Digest.decode(claim.content.digest)
-    const multihashStr = base58btc.encode(contentMultihash.bytes)
-
-    if (!shardLocationMap.has(multihashStr)) {
-      shardLocationMap.set(multihashStr, [])
-    }
-    shardLocationMap.get(multihashStr).push(claim)
-  }
-
-  // Check each shard to see if it needs a location claim or needs space info added
+  // Check each shard to see if it has a location claim with the correct space
   const shardsNeedingLocationClaims = []
+  
   for (const shardCID of upload.shards) {
     const cid = CID.parse(shardCID)
     const multihashStr = base58btc.encode(cid.multihash.bytes)
-
-    const claims = shardLocationMap.get(multihashStr) || []
-    if (claims.length === 0) {
+    
+    // Find location claims for this shard by matching multihash
+    const shardLocationClaims = allLocationClaims.filter((claim) => {
+      if (!claim.content || !claim.content.multihash || !claim.content.multihash.bytes) {
+        return false
+      }
+      const claimContentMultihash = base58btc.encode(claim.content.multihash.bytes)
+      return claimContentMultihash === multihashStr
+    })
+    
+    if (shardLocationClaims.length === 0) {
       // No location claim exists for this shard
       shardsNeedingLocationClaims.push(shardCID)
       console.log(`    ✗ ${shardCID}: no location claim found`)
     } else {
-      // Check if ANY claim has space information
-      const hasClaimWithSpace = claims.some((claim) => claim.space != null)
+      // Check if at least one claim has the correct space
+      const hasClaimWithCorrectSpace = shardLocationClaims.some(
+        (claim) => claim.space != null && claim.space.did() === upload.space
+      )
 
-      if (!hasClaimWithSpace) {
-        // Location claims exist but none have space field
+      if (!hasClaimWithCorrectSpace) {
+        // Location claims exist but none have the correct space field
         shardsNeedingLocationClaims.push(shardCID)
-        console.log(`    ✗ ${shardCID}: location claim missing space field`)
+        console.log(`    ✗ ${shardCID}: location claim missing correct space field`)
       }
     }
   }
@@ -123,8 +116,8 @@ export async function checkMigrationNeeded (upload) {
     needsLocationClaims: shardsNeedingLocationClaims.length > 0,
     needsGatewayAuth: true, // Always create gateway auth for now
     hasIndexClaim: indexingData.hasIndexClaim,
-    hasLocationClaim: indexingData.hasLocationClaim,
-    locationHasSpace: indexingData.locationHasSpace,
+    hasLocationClaim: allLocationClaims.length > 0,
+    locationHasSpace: shardsNeedingLocationClaims.length === 0,
     shardsNeedingLocationClaims, // Only shards that need republishing
     indexCID: indexingData.indexCID // CID of the existing index (if any)
   }
@@ -218,8 +211,10 @@ export async function buildAndMigrateIndex ({ upload }) {
   console.log('    Publishing location claim for index CAR...')
   try {
     await republishLocationClaims({
-      space: migrationSpaceDID,
-      shards: [indexCID.toString()]
+      space,
+      migrationSpaceDID,
+      root: indexCID.toString(),
+      shards: upload.shards
     })
     console.log('    ✓ Index CAR location claim published')
   } catch (error) {
@@ -353,11 +348,15 @@ export async function registerIndex ({ upload, indexCID }) {
  * @param {object} params
  * @param {string} params.space - Space DID
  * @param {string[]} params.shards - Shard CIDs (CAR files) to republish
+ * @param {string} params.root - Root CID (index CAR)
+ * @param {string} params.migrationSpaceDID - Migration space DID
  * @param {Array<{cid: string, size: number}>} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
  * @returns {Promise<void>}
  */
 export async function republishLocationClaims ({
   space,
+  migrationSpaceDID,
+  root,
   shards,
   shardsWithSizes
 }) {
@@ -367,8 +366,12 @@ export async function republishLocationClaims ({
   const claimsSigner = await getClaimsSigner()
 
   const claimsServiceURL = new URL(config.services.contentClaimsServiceURL)
+  // Parse the claims service DID from the URL (e.g., did:web:staging.claims.web3.storage)
+  const claimsServiceDID = config.services.claimsServiceDID
+  const claimsServicePrincipal = DID.parse(claimsServiceDID)
+  
   const claimsConnection = connect({
-    id: claimsSigner,
+    id: claimsServicePrincipal,
     codec: CAR.outbound,
     channel: HTTP.open({ url: claimsServiceURL })
   })
@@ -392,26 +395,63 @@ export async function republishLocationClaims ({
       // Construct location URL from carpark
       const location = `${config.storage.carparkPublicUrl}/${shardCID}`
 
-      // Invoke with claims service signer
-      const result = await Assert.location
-        .invoke({
-          issuer: claimsSigner,
-          audience: claimsConnection.id,
-          with: claimsSigner.did(),
-          nb: {
-            content: { digest },
-            location: [location],
-            range: { offset: 0, length: size },
-            space: ed25519.Verifier.parse(space) // space field included to enable egress tracking
-          },
-          expiration: Infinity
-        })
-        .execute(claimsConnection)
+      console.log(`    [DEBUG] Publishing location claim:`)
+      console.log(`      Shard CID: ${shardCID}`)
+      console.log(`      Digest (base58btc): ${base58btc.encode(digest)}`)
+      console.log(`      Space: ${space}`)
+      console.log(`      Location: ${location}`)
+      console.log(`      Size: ${size}`)
+      console.log(`      Claims Service URL: ${claimsServiceURL}`)
+      console.log(`      Issuer (Claims Signer): ${claimsSigner.did()}`)
+      console.log(`      Audience (Claims Service): ${claimsServicePrincipal.did()}`)
+
+      // Create the invocation (matching upload-api pattern)
+      const invocation = await Assert.location.invoke({
+        issuer: claimsSigner,
+        audience: claimsServicePrincipal,
+        with: claimsSigner.did(),
+        nb: {
+          content: { digest },
+          location: [location],
+          range: { offset: 0, length: size },
+          space: DID.parse(space) // space field included to enable egress tracking - parse as Principal
+        },
+        expiration: Infinity,
+        proofs: [] // Empty proofs since we're using the service private key to sign
+      })
+      
+      console.log(`    [DEBUG] Invocation capabilities:`, invocation.capabilities)
+      
+      // Execute the invocation
+      console.log(`    [DEBUG] Executing invocation...`)
+      const result = await invocation.execute(claimsConnection)
+      console.log(`    [DEBUG]`)
+      console.log(result)
+
+      // Get the invocation CID from the receipt
+      const invocationCID = result.ran?.toString()
+      console.log(`    [DEBUG] Invocation CID (from receipt): ${invocationCID}`)
+      console.log(`    [DEBUG] Result:`, result.out.ok ? 'SUCCESS' : `ERROR: ${result.out.error?.message}`)
 
       if (result.out.error) {
         throw new Error(
           `Failed to republish location claim: ${result.out.error.message}`
         )
+      }
+
+      // Verify the claim via Content Claims Service (DynamoDB)
+      console.log(`    [DEBUG] Verifying claim via Content Claims Service (DynamoDB)...`)
+      
+      const verifyResult = await verifyLocationClaimWithSpace(shardCID, space)
+      console.log(`    [DEBUG] Content Claims Service results:`)
+      console.log(`      Has location claim: ${verifyResult.hasLocationClaim}`)
+      console.log(`      Has claim with space: ${verifyResult.hasClaimWithSpace}`)
+      console.log(`      Total claims: ${verifyResult.totalClaims}`)
+      
+      if (verifyResult.hasClaimWithSpace) {
+        console.log(`    ✅ Claim verified in Content Claims Service!`)
+      } else {
+        console.log(`    ⚠️  WARNING: Claim not found in Content Claims Service despite success receipt`)
       }
 
       console.log(`    ✓ ${shardCID}`)

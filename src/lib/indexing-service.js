@@ -49,10 +49,13 @@ export async function queryIndexingService(contentCID) {
         spaces: [],
         indexCID: null,
         claims: [],
+        indexes: new Map(),
       }
     }
     
     const claims = Array.from(result.ok.claims.values())
+    const indexes = result.ok.indexes // ShardedDAGIndex structures
+    
     const hasIndexClaim = claims.some(c => c.type === 'assert/index')
     const locationClaims = claims.filter(c => c.type === 'assert/location')
     const hasLocationClaim = locationClaims.length > 0
@@ -76,6 +79,7 @@ export async function queryIndexingService(contentCID) {
       spaces,
       indexCID,
       claims,
+      indexes, // Include the parsed ShardedDAGIndex structures
     }
   } catch (error) {
     console.error(`Error querying indexing service for ${contentCID}:`, error)
@@ -86,6 +90,7 @@ export async function queryIndexingService(contentCID) {
       spaces: [],
       indexCID: null,
       claims: [],
+      indexes: new Map(),
     }
   }
 }
