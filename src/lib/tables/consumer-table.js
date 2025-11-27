@@ -1,10 +1,11 @@
 /**
  * Query Consumer Table to get space ownership (space -> customer mapping)
  */
-import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
+import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { CBOR } from '@ucanto/core'
 import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
+import { getErrorMessage } from '../error-utils.js'
 
 // Cache for space -> customer lookups
 // Reset per migration run (not persistent across restarts)
@@ -78,14 +79,14 @@ export function clearCache() {
  * Follows w3infra's exact pattern: subscription = CID(CBOR({ consumer: space }))
  * Note: The CBOR payload uses "consumer" as the key to match w3infra's implementation.
  * 
- * @param {string} space - Space DID (consumer)
+ * @param {import('@storacha/access').SpaceDID} space - Space DID (consumer)
  * @returns {Promise<string>} - Subscription ID (CID as string)
  */
 async function createProvisionSubscriptionId(space) {
   // Match w3infra's exact implementation:
   // https://github.com/storacha/w3infra/blob/main/upload-api/stores/provisions.js
   // The CBOR must use 'consumer' as the key to generate the same CID
-  const subscription = (await CBOR.write({ consumer: space })).cid.toString()
+  const subscription = (await CBOR.write({ consumer: space.did() })).cid.toString()
   return subscription
 }
 
@@ -96,7 +97,7 @@ async function createProvisionSubscriptionId(space) {
  * Creates both subscription and consumer records, following w3infra's pattern.
  * 
  * @param {string} customer - Customer account DID (did:mailto:...)
- * @param {string} space - Space DID (did:key:...)
+ * @param {import('@storacha/access').SpaceDID} space - Space DID (did:key:...)
  * @param {string} [provider] - Provider DID (default: service DID from config)
  * @returns {Promise<void>}
  */
@@ -126,11 +127,11 @@ export async function provisionSpace(customer, space, provider) {
     await client.send(subscriptionCommand)
     console.log(`    ✓ Created subscription ${subscription}`)
   } catch (error) {
-    if (error.name === 'ConditionalCheckFailedException') {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'ConditionalCheckFailedException') {
       console.log(`    ⊘ Subscription already exists`)
       // Continue to create consumer record
     } else {
-      throw new Error(`Failed to create subscription: ${error.message}`)
+      throw new Error(`Failed to create subscription: ${getErrorMessage(error)}`)
     }
   }
   
@@ -152,10 +153,10 @@ export async function provisionSpace(customer, space, provider) {
     await client.send(consumerCommand)
     console.log(`    ✓ Provisioned space ${space} to ${customer}`)
   } catch (error) {
-    if (error.name === 'ConditionalCheckFailedException') {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'ConditionalCheckFailedException') {
       console.log(`    ⊘ Space already provisioned`)
       return
     }
-    throw new Error(`Failed to provision space: ${error.message}`)
+    throw new Error(`Failed to provision space: ${getErrorMessage(error)}`)
   }
 }

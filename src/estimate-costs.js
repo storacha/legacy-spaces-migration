@@ -13,10 +13,11 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { validateConfig } from './config.js'
+import { validateConfig, config } from './config.js'
 import { sampleUploads } from './lib/tables/upload-table.js'
-import { getShardSize } from './lib/tables/blob-registry-table.js'
+import { getShardSize } from './lib/tables/shard-data-table.js'
 import { generateShardedIndex } from './lib/index-worker.js'
+import { getErrorMessage } from './lib/error-utils.js'
 
 /**
  * Cloudflare Workers Pricing
@@ -107,7 +108,7 @@ async function estimateCosts(sampleSize, spaceFilter = null, dryRun = false) {
         }
       } catch (error) {
         stats.errors++
-        console.error(`  ✗ FAILED: ${error.message}`)
+        console.error(`  ✗ FAILED: ${getErrorMessage(error)}`)
       }
     }
     

@@ -26,7 +26,6 @@ export async function getMigrationSpace(customer) {
   })
   
   const response = await client.send(command)
-  
   if (!response.Item) {
     return null
   }
@@ -45,7 +44,7 @@ export async function getMigrationSpace(customer) {
  * 
  * @param {object} params
  * @param {string} params.customer - Customer account DID
- * @param {string} params.migrationSpace - Migration space DID
+ * @param {import('@storacha/access').SpaceDID} params.migrationSpace - Migration space DID
  * @param {string} params.spaceName - Human-readable space name
  * @param {string} [params.privateKey] - Encrypted private key (optional)
  * @returns {Promise<void>}

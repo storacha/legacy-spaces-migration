@@ -1,8 +1,12 @@
+/**
+ * Verification functions for migration steps
+ * Checks that all migration steps completed successfully
+ */
 import { queryIndexingService } from './indexing-service.js'
 import { verifyLocationClaimWithSpace } from './tables/content-claims-table.js'
+import { getErrorMessage } from './error-utils.js'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
-import * as Digest from 'multiformats/hashes/digest'
 
 /**
  * Verify that all migration steps completed successfully
@@ -159,7 +163,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       details: details || 'All verification checks passed',
     }
   } catch (error) {
-    console.error(`    ✗ Verification failed: ${error.message}`)
+    console.error(`    ✗ Verification failed: ${getErrorMessage(error)}`, { cause: error })
     return {
       success: false,
       indexVerified: false,
@@ -167,7 +171,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       allShardsHaveSpace: false,
       gatewayAuthVerified: false,
       shardsWithoutSpace: upload.shards,
-      details: `Verification error: ${error.message}`,
+      details: `Verification error: ${getErrorMessage(error)}`,
     }
   }
 }

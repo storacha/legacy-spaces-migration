@@ -52,6 +52,7 @@ import {
 } from './lib/migration-steps.js'
 import { verifyMigration } from './lib/migration-verify.js'
 import { CID } from 'multiformats/cid'
+import { getErrorMessage } from './lib/error-utils.js'
 
 /**
  * Load customer list from a JSON file
@@ -385,14 +386,16 @@ async function migrateUpload(upload, options = {}) {
         : verificationResult.details,
     }
   } catch (error) {
-    console.error(`\n❌ Migration failed for ${upload.root}:`, error.message)
-    console.error(error.stack)
+    console.error(`\n❌ Migration failed for ${upload.root}:`, getErrorMessage(error))
+    if (error instanceof Error) {
+      console.error(error.stack)
+    }
 
     return {
       success: false,
       upload: upload.root,
       space: upload.space,
-      error: error.message,
+      error: getErrorMessage(error),
     }
   }
 }
