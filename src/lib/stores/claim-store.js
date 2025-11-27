@@ -11,6 +11,7 @@ import {
 } from '@aws-sdk/client-s3'
 import { Delegation } from '@ucanto/core'
 import { config } from '../../config.js'
+import { getErrorMessage } from '../error-utils.js'
 
 /**
  * Cached S3 clients
@@ -64,7 +65,7 @@ export async function storeClaim(delegation) {
 
   const res = await delegation.archive()
   if (res.error) {
-    throw new Error(`Failed to archive delegation: ${res.error.message}`)
+    throw new Error(`Failed to archive delegation: ${getErrorMessage(res.error)}`, { cause: res.error })
   }
 
   const carBytes = res.ok
@@ -109,12 +110,10 @@ export async function getClaim(link) {
     carBytes = await s3Object.Body.transformToByteArray()
     console.log(`      ✓ Fetched from S3: ${config.storage.claimsBucket}`)
   } catch (s3Error) {
-    if (s3Error instanceof Error) {
-      console.error(
-        `      ✗ Failed to fetch delegation ${link}:`,
-        s3Error.message
-      )
-    }
+    console.error(
+      `      ✗ Failed to fetch delegation ${link}:`,
+      getErrorMessage(s3Error), { cause: s3Error }
+    )
     throw s3Error
   }
 
@@ -123,7 +122,8 @@ export async function getClaim(link) {
 
   if (res.error) {
     throw new Error(
-      `Failed to extract delegation from CAR: ${res.error.message}`
+      `Failed to extract delegation from CAR: ${getErrorMessage(res.error)}`,
+      { cause: res.error }
     )
   }
 

@@ -15,12 +15,12 @@ import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
 import * as HTTP from '@ucanto/transport/http'
 import { Absentee } from '@ucanto/principal'
-import * as UCAN from '@storacha/capabilities/ucan'
 import { Assert } from '@web3-storage/content-claims/capability'
 import {
   Access as AccessCapabilities,
   Space as SpaceCapabilities,
   Claim as ClaimCapabilities,
+  UCAN,
 } from '@storacha/capabilities'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
@@ -38,12 +38,14 @@ import {
 } from './migration-utils.js'
 import {
   config,
-  getClaimsSigner,
   getGatewaySigner,
   getPiriSigner,
   getUploadServiceSigner,
 } from '../config.js'
-import { index } from '@storacha/capabilities/assert'
+import { LocationCommitmentMetadata } from './ipni/location.js'
+import { SQSPublishingQueue } from './ipni/sqsqueue.js'
+import { encodeContextID } from './ipni/advertisement.js'
+import { getErrorMessage } from './error-utils.js'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -215,10 +217,8 @@ export async function buildAndMigrateIndex({ upload }) {
     )
     console.log('    ✓ Index blob uploaded to migration space')
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Failed to upload index blob: ${error.message}`)
-    }
-    throw error
+    console.error('    ✗ Failed to upload index blob')
+    throw new Error(`Failed to upload index blob: ${getErrorMessage(error)}`, {cause: error})
   }
 
   // CRITICAL: Publish location claim for the index CAR itself BEFORE registering
@@ -233,8 +233,10 @@ export async function buildAndMigrateIndex({ upload }) {
     })
     console.log('    ✓ Index CAR location claim published')
   } catch (error) {
+    console.error('    ✗ Failed to publish index CAR location claim')
     throw new Error(
-      `Failed to publish index CAR location claim: ${error.message}`
+      `Failed to publish index CAR location claim: ${getErrorMessage(error)}`,
+      {cause: error}
     )
   }
 
@@ -255,9 +257,9 @@ export async function buildAndMigrateIndex({ upload }) {
     )
     console.log('    ✓ Index registered (assert/index claim published)')
   } catch (error) {
-    console.log('    DEBUG: Index.add threw error:', error.message)
-    console.log('    DEBUG: Error cause:', JSON.stringify(error.cause, null, 2))
-    throw new Error(`Failed to register index: ${error.message}`)
+    console.log('    DEBUG: Index.add threw error:', getErrorMessage(error))
+    console.log('    DEBUG: Error cause:', error instanceof Error ? JSON.stringify(error.cause, null, 2) : 'N/A')
+    throw new Error(`Failed to register index: ${getErrorMessage(error)}`)
   }
 
   // Increment index count in tracking table
@@ -282,7 +284,9 @@ export async function buildAndMigrateIndex({ upload }) {
  * This notifies the indexing service to pull in any new location claims
  *
  * @param {object} params
- * @param {object} params.upload - Upload object with space and root
+ * @param {object} params.upload - Upload record from Upload Table
+ * @param {string} params.upload.space - Original space DID (where content was uploaded)
+ * @param {string} params.upload.root - Root CID (content to index)
  * @param {import('multiformats').CID} params.indexCID - CID of the index to register
  */
 export async function registerIndex({ upload, indexCID }) {
@@ -306,7 +310,7 @@ export async function registerIndex({ upload, indexCID }) {
     throw new Error(`No customer found for space ${upload.space}`)
   }
 
-  const { space: migrationSpace, spaceDID: migrationSpaceDID } =
+  const { space: migrationSpace } =
     await getOrCreateMigrationSpaceForCustomer(customer)
 
   // Register index via space/index/add (publishes assert/index claim)
@@ -323,7 +327,7 @@ export async function registerIndex({ upload, indexCID }) {
     result = await Index.add(
       {
         issuer: spaceSigner, // Sign with the space's signer (owner can self-authorize)
-        with: migrationSpaceDID, // Register index for migration space
+        with: migrationSpace.did(), // Register index for migration space
         audience: uploadServiceDID, // Audience is the upload service DID
         proofs: [], // Empty proofs - space owner self-authorizes
       },
@@ -331,7 +335,7 @@ export async function registerIndex({ upload, indexCID }) {
       { connection }
     )
   } catch (error) {
-    console.error('Index.add threw error:', error.message)
+    console.error('Index.add threw error:', getErrorMessage(error), {cause: error})
     throw error
   }
 
@@ -343,7 +347,7 @@ export async function registerIndex({ upload, indexCID }) {
   if (result.out.error) {
     throw new Error(
       `Failed to register index: ${
-        result.out.error.message || JSON.stringify(result.out.error)
+        getErrorMessage(result.out.error) || JSON.stringify(result.out.error)
       }`
     )
   }
@@ -391,6 +395,18 @@ export async function republishLocationClaims({
   const shardSizeMap = shardsWithSizes
     ? new Map(shardsWithSizes.map((s) => [s.cid, s.size]))
     : null
+
+  // Initialize IPNI publishing queue
+  const queue = new SQSPublishingQueue({
+    queueUrl: config.queues.ipniPublishingQueue,
+    bucketName: config.storage.ipniPublishingBucket,
+  })
+
+  // Provider info for IPNI advertisement
+  const providerInfo = {
+    id: config.addresses.peerID,
+    addrs: [config.addresses.claimAddr, config.addresses.blobProtocolBlobAddr],
+  }
 
   // Republish location claim for each shard
   for (const shardCID of shards) {
@@ -477,38 +493,63 @@ export async function republishLocationClaims({
       )
 
       if (result.out.error) {
+        console.error('    ✗ Failed to republish location claim', result.out.error)
         throw new Error(
-          `Failed to republish location claim: ${result.out.error.message}`
+          `Failed to republish location claim: ${getErrorMessage(result.out.error)}`,
+          { cause: result.out }
         )
       }
 
-      /** TODO: use all the utils in lib/ipni to publish to IPNI */
+      // Publish to IPNI via SQS
+      console.log(`    [DEBUG] Publishing to IPNI queue...`)
+      const meta = new LocationCommitmentMetadata({
+        shard: cid,
+        claim: claim.link(),
+        expiration: claim.expiration === Infinity ? 0n : BigInt(claim.expiration),
+      })
+      
+      // Encode context ID (Space DID + Content Multihash) and send job to queue
+      const contextID = await encodeContextID(space, digest)
+      await queue.sendJob({
+        providerInfo,
+        contextID,
+        digests: [digest],
+        metadata: await meta.marshalBinary(),
+      })
+      
+      console.log(`    ✓ Published to IPNI queue`)
 
-      // Verify the claim via Content Claims Service (DynamoDB)
-      console.log(
-        `    [DEBUG] Verifying claim via Content Claims Service (DynamoDB)...`
-      )
+      console.log(`    [DEBUG] Verifying claim via Indexing Service...`)
 
-      /** TODO: replace with indexer check */
-      const verifyResult = await verifyLocationClaimWithSpace(shardCID, space)
-      console.log(`    [DEBUG] Content Claims Service results:`)
-      console.log(`      Has location claim: ${verifyResult.hasLocationClaim}`)
-      console.log(
-        `      Has claim with space: ${verifyResult.hasClaimWithSpace}`
-      )
-      console.log(`      Total claims: ${verifyResult.totalClaims}`)
+      // Query indexing service for the root to see if this shard's claim is reflected
+      const indexingData = await queryIndexingService(root)
+      
+      // Find location claims for this shard
+      const shardClaims = indexingData.claims.filter(c => {
+        if (c.type !== 'assert/location') return false
+        if (!c.content || !c.content.multihash) return false
+        const claimDigest = base58btc.encode(c.content.multihash.bytes)
+        return claimDigest === base58btc.encode(digest)
+      })
+      
+      const hasClaimWithSpace = shardClaims.some(c => {
+        // Check for space matching - handle different formats if needed
+        if (!c.space) return false
+        const claimSpace = typeof c.space === 'string' ? c.space : c.space.did()
+        return claimSpace === space
+      })
 
-      if (verifyResult.hasClaimWithSpace) {
-        console.log(`    ✅ Claim verified in Content Claims Service!`)
+      if (hasClaimWithSpace) {
+        console.log(`    ✅ Location Claim verified in Indexing Service!`)
       } else {
         console.log(
-          `    ⚠️  WARNING: Claim not found in Content Claims Service despite success receipt`
+          `    ⚠️  WARNING: Location Claim not found in Indexing Service yet (might be propagating)`
         )
       }
 
       console.log(`    ✓ ${shardCID}`)
     } catch (error) {
-      console.error(`    ✗ ${shardCID}: ${error.message}`)
+      console.error(`    ✗ ${shardCID}: ${getErrorMessage(error)}`)
       throw error
     }
   }
@@ -532,7 +573,7 @@ export async function republishLocationClaims({
  *
  * @param {object} params
  * @param {string} params.space - Space DID
- * @returns {Promise<import('@ucanto/client').Result<{skipped: boolean, reason: string}>>}
+ * @returns {Promise<import('@ucanto/client').Result<{success: boolean, skipped: boolean, reason: string}>>}
  */
 export async function createGatewayAuth({ space }) {
   console.log('  Creating gateway authorization...')
@@ -570,7 +611,7 @@ export async function createGatewayAuth({ space }) {
         '       Gateway authorization will be skipped for this space.'
       )
       return {
-        ok: { skipped: true, reason: 'no-delegation-found' },
+        ok: { success: false, skipped: true, reason: 'no-delegation-found' },
       }
     }
 
@@ -673,23 +714,23 @@ export async function createGatewayAuth({ space }) {
     const result = await invocation.execute(gatewayConnection)
     if (result.out.error) {
       throw new Error(
-        `Failed to publish gateway delegation: ${result.out.error.message}`
+        `Failed to publish gateway delegation: ${getErrorMessage(result.out.error)}`
       )
     }
 
     console.log('    ✓ Gateway authorization published successfully')
-    return { success: true }
+    return { success: true, skipped: false, reason: '' }
   } catch (error) {
     console.error(error)
     // Log error but don't fail the migration - gateway auth can be retried independently
     console.error(
-      `    ✗ Failed to create gateway authorization: ${error.message}`
+      `    ✗ Failed to create gateway authorization: ${getErrorMessage(error)}`
     )
     console.error(
       '    This can be retried independently without affecting other migration steps'
     )
     // Don't throw - allow migration to continue
-    return { success: false }
+    return { success: false, skipped: true, reason: 'Failed to publish gateway delegation' }
   }
 }
 
@@ -823,14 +864,14 @@ export async function verifyMigration({ upload }) {
       details: details || 'All verification checks passed',
     }
   } catch (error) {
-    console.error(`    ✗ Verification failed: ${error.message}`)
+    console.error(`    ✗ Verification failed: ${getErrorMessage(error)}`, { cause: error })
     return {
       success: false,
       indexVerified: false,
       locationClaimsVerified: false,
       allShardsHaveSpace: false,
       shardsWithoutSpace: upload.shards,
-      details: `Verification error: ${error.message}`,
+      details: `Verification error: ${getErrorMessage(error)}`,
     }
   }
 }

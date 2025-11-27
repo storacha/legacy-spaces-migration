@@ -11,6 +11,7 @@ import { delegationsToBytes, bytesToDelegations } from '@storacha/access/encodin
 import { parseLink } from '@ucanto/core'
 import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
+import { getErrorMessage } from '../error-utils.js'
 
 /**
  * Cached S3 clients
@@ -196,13 +197,13 @@ export async function findDelegationByIssuer(spaceDID) {
           console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
         } catch (s3Error) {
           console.error(`      ✗ Failed to fetch from both R2 and S3:`)
-          console.error(`        R2: ${r2Error.message}`)
-          console.error(`        S3: ${s3Error.message}`)
+          console.error(`        R2: ${getErrorMessage(r2Error)}`)
+          console.error(`        S3: ${getErrorMessage(s3Error)}`)
           throw s3Error
         }
       } else {
         // Other R2 errors (permissions, network, etc.)
-        console.error(`      ✗ Failed to fetch delegation ${link}:`, r2Error.message)
+        console.error(`      ✗ Failed to fetch delegation ${link}:`, getErrorMessage(r2Error), { cause: r2Error })
         throw r2Error
       }
     }
@@ -217,7 +218,7 @@ export async function findDelegationByIssuer(spaceDID) {
       carBytes = await s3Object.Body.transformToByteArray()
       console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
     } catch (s3Error) {
-      console.error(`      ✗ Failed to fetch delegation ${link}:`, s3Error.message)
+      console.error(`      ✗ Failed to fetch delegation ${link}:`, getErrorMessage(s3Error), { cause: s3Error })
       throw s3Error
     }
   }
