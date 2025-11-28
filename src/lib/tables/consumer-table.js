@@ -36,6 +36,7 @@ export async function getCustomerForSpace(space) {
       KeyConditionExpression: 'consumer = :consumer',
       ExpressionAttributeValues: {
         ':consumer': space,
+        ':provider': provider,
       },
       Limit: 1,
     })
@@ -56,24 +57,6 @@ export async function getCustomerForSpace(space) {
 }
 
 /**
- * Get cache statistics for monitoring
- * 
- * @returns {{ size: number, hitRate: number }}
- */
-export function getCacheStats() {
-  return {
-    size: customerCache.size,
-  }
-}
-
-/**
- * Clear the cache (useful for testing)
- */
-export function clearCache() {
-  customerCache.clear()
-}
-
-/**
  * Generate subscription ID from space (consumer)
  * 
  * Follows w3infra's exact pattern: subscription = CID(CBOR({ consumer: space }))
@@ -86,7 +69,7 @@ async function createProvisionSubscriptionId(space) {
   // Match w3infra's exact implementation:
   // https://github.com/storacha/w3infra/blob/main/upload-api/stores/provisions.js
   // The CBOR must use 'consumer' as the key to generate the same CID
-  const subscription = (await CBOR.write({ consumer: space.did() })).cid.toString()
+  const subscription = (await CBOR.write({ consumer: space })).cid.toString()
   return subscription
 }
 
@@ -104,7 +87,7 @@ async function createProvisionSubscriptionId(space) {
 export async function provisionSpace(customer, space, provider) {
   const client = getDynamoClient()
   
-  const providerDID = provider || config.credentials.serviceDID
+  const providerDID = provider || config.services.uploadServiceDID
   const now = new Date().toISOString()
   
   // Generate subscription ID deterministically from consumer (space)

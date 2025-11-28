@@ -151,9 +151,10 @@ export async function checkMigrationNeeded(upload) {
  * @param {string} params.upload.space - Original space DID (where content was uploaded)
  * @param {string} params.upload.root - Root CID (content to index)
  * @param {string[]} params.upload.shards - Shard CIDs (CAR files containing the content)
- * @returns {Promise<{migrationSpace: string, indexCID: import('multiformats').CID}>}
+ * @returns {Promise<{migrationSpace: string, indexCID: import('multiformats').CID, shards: Array<{cid: string, size: number}>}>}
  *   - migrationSpace: DID of the migration space where index was uploaded
  *   - indexCID: CID of the generated index
+ *   - shards: Shards with sizes
  */
 export async function buildAndMigrateIndex({ upload }) {
   console.log('  Building and migrating index...')
@@ -161,7 +162,7 @@ export async function buildAndMigrateIndex({ upload }) {
   console.log(`    Content root: ${upload.root}`)
 
   // Generate sharded DAG index for the content
-  const { indexBytes, indexCID, indexDigest } = await generateDAGIndex(upload)
+  const { indexBytes, indexCID, indexDigest, shards } = await generateDAGIndex(upload)
 
   const serviceSigner = await getUploadServiceSigner()
   const serviceURL = new URL(config.services.uploadServiceURL)
@@ -181,7 +182,6 @@ export async function buildAndMigrateIndex({ upload }) {
   const {
     space: migrationSpace,
     isNew,
-    spaceDID: migrationSpaceDID,
   } = await getOrCreateMigrationSpaceForCustomer(customer)
 
   // Verify we have the migration space signer
@@ -189,7 +189,7 @@ export async function buildAndMigrateIndex({ upload }) {
     throw new Error('Migration space not available - this should never happen!')
   }
   console.log(
-    `    Migration space: ${migrationSpaceDID} ${
+    `    Migration space: ${migrationSpace.did()} ${
       isNew ? '(newly created)' : '(existing)'
     }`
   )
@@ -207,7 +207,7 @@ export async function buildAndMigrateIndex({ upload }) {
     await SpaceBlob.add(
       {
         issuer: spaceSigner, // Sign with the space's signer (owner can self-authorize)
-        with: DID.parse(migrationSpaceDID).did(), // Upload to migration space
+        with: migrationSpace.did(), // Upload to migration space
         audience: uploadServiceDID, // Audience is the upload service DID
         proofs: [], // Empty proofs - space owner self-authorizes
       },
@@ -226,8 +226,8 @@ export async function buildAndMigrateIndex({ upload }) {
   console.log('    Publishing location claim for index CAR...')
   try {
     await republishLocationClaims({
-      space,
-      migrationSpaceDID,
+      space: /** @type {import('@storacha/access').SpaceDID} */ (upload.space),
+      // migrationSpaceDID,
       root: indexCID.toString(),
       shards: upload.shards,
     })
@@ -248,7 +248,7 @@ export async function buildAndMigrateIndex({ upload }) {
     indexInvocation = await Index.add(
       {
         issuer: spaceSigner, // Sign with the space's signer (owner can self-authorize)
-        with: migrationSpaceDID, // Register for migration space
+        with: migrationSpace.did(), // Register for migration space
         audience: uploadServiceDID, // Audience is the upload service DID
         proofs: [], // Empty proofs - space owner self-authorizes
       },
@@ -270,13 +270,12 @@ export async function buildAndMigrateIndex({ upload }) {
     console.log('    Delegating migration space access to customer...')
     await delegateMigrationSpaceToCustomer({
       migrationSpace,
-      migrationSpaceDID,
       customer,
       cause: indexInvocation.cid, // Link delegation to index registration
     })
   }
 
-  return { migrationSpace: migrationSpaceDID, indexCID }
+  return { migrationSpace: migrationSpaceDID, indexCID, shards }
 }
 
 /**
@@ -362,11 +361,11 @@ export async function registerIndex({ upload, indexCID }) {
  * space DIDs. This enables the freeway to properly track egress per space.
  *
  * @param {object} params
- * @param {string} params.space - Space DID
+ * @param {import('@storacha/access').SpaceDID} params.space - Space DID
  * @param {string[]} params.shards - Shard CIDs (CAR files) to republish
  * @param {string} params.root - Root CID (index CAR)
- * @param {string} params.migrationSpaceDID - Migration space DID
- * @param {Array<{cid: string, size: number}>} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
+ * @param {import('@storacha/access').SpaceDID} [params.migrationSpace] - Migration space DID
+ * @param {Array<{cid: string, size: number}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
  * @returns {Promise<void>}
  */
 export async function republishLocationClaims({
@@ -375,7 +374,7 @@ export async function republishLocationClaims({
   shards,
   shardsWithSizes,
 }) {
-  console.log(`  Republishing ${shards.length} location claims with space...`)
+  console.log(`  Republishing ${shards.length} location claims with space ${space}...`)
 
   // Get claims service signer with the correct did:web identity
   const piriSigner = await getPiriSigner()
@@ -431,6 +430,7 @@ export async function republishLocationClaims({
       console.log(`      Shard CID: ${shardCID}`)
       console.log(`      Digest (base58btc): ${base58btc.encode(digest)}`)
       console.log(`      Space: ${space}`)
+      console.log(`      Migration Space: ${migrationSpace}`)
       console.log(`      Location: ${location}`)
       console.log(`      Size: ${size}`)
       console.log(`      Indexing Service URL: ${indexingServiceURL}`)
@@ -555,14 +555,6 @@ export async function republishLocationClaims({
   }
 
   console.log(`    ✓ Successfully republished ${shards.length} location claims`)
-
-  // TODO: Clean up old location claims without space information
-  // This requires:
-  // 1. Query content-claims service for existing location claims for each shard
-  // 2. Find claims without space field (old claims)
-  // 3. DELETE that record somehow (not sure how the deletion operation happens)
-  // 4. Verify only new claims (with space) remain
-  // NOTE: Need to confirm DELETE API exists in content-claims service
 }
 
 /**

@@ -9,6 +9,7 @@ import { ShardedDAGIndex } from '@storacha/blob-index'
 import { base58btc } from 'multiformats/bases/base58'
 import { CID } from 'multiformats/cid'
 import * as Digest from 'multiformats/hashes/digest'
+import { getErrorMessage } from './error-utils'
 
 const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.workers.dev'
 
@@ -17,7 +18,7 @@ const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.worker
  * 
  * @param {import('multiformats').CID} shardCID - The CID of the shard
  * @param {number} size - The size of the blob in bytes
- * @returns {Promise<Map<Uint8Array, [number, number]>>} - Map of digest bytes to [offset, length]
+ * @returns {Promise<{slices: Map<Uint8Array, [number, number]>, requestCount: number}>} - Map of digest bytes to [offset, length]
  */
 async function buildIndex(shardCID, size) {
   const slices = new Map()
@@ -74,8 +75,12 @@ async function buildIndex(shardCID, size) {
       if (!res.ok) {
         throw new Error(`Worker returned ${res.status}: ${await res.text()}`)
       }
+      const body = res.body
+      if (!body) {
+        throw new Error('No body in response')
+      }
       
-      await res.body
+      await body
         .pipeThrough(new Parse(line => dagJSON.parse(line)))
         .pipeTo(new WritableStream({
           write([digestBytes, position]) {
@@ -105,7 +110,7 @@ async function buildIndex(shardCID, size) {
       if (consecutiveRetries > MAX_RETRIES) {
         throw new Error(`Max retries (${MAX_RETRIES}) exceeded for ${blobKey} at offset ${offset}`, { cause: err })
       }
-      console.warn(`Retrying after partial failure (attempt ${consecutiveRetries}/${MAX_RETRIES}): ${err.message}`)
+      console.warn(`Retrying after partial failure (attempt ${consecutiveRetries}/${MAX_RETRIES}): ${getErrorMessage(err)}`)
     }
   }
   return { slices, requestCount }
@@ -116,7 +121,7 @@ async function buildIndex(shardCID, size) {
  * 
  * @param {string} rootCID - Root CID string
  * @param {Array<{cid: string, size: number}>} shards - Array of shard info
- * @returns {Promise<Uint8Array>} - Archived index as CAR bytes
+ * @returns {Promise<{indexBytes: Uint8Array, indexCID: CID, indexDigest: import('multiformats').MultihashDigest<number>, shards: Array<{cid: string, size: number}>, totalRequests: number}>} - Archived index as CAR bytes
  */
 export async function generateShardedIndex(rootCID, shards) {
   const root = CID.parse(rootCID)
@@ -144,14 +149,14 @@ export async function generateShardedIndex(rootCID, shards) {
     
     // Add the shard itself as a slice FIRST (full CAR file)
     if (shardSize) {
-      index.setSlice(shardCID.multihash, shardCID.multihash, { offset: 0, length: shardSize })
+      index.setSlice(shardCID.multihash, shardCID.multihash, [0, shardSize])
     }
     
     // Then add content slices
     for (const [digestBytes, position] of slices.entries()) {
       const sliceDigest = Digest.decode(digestBytes)
       const [offset, length] = position
-      index.setSlice(shardCID.multihash, sliceDigest, { offset, length })
+      index.setSlice(shardCID.multihash, sliceDigest, [offset, length])
     }
   }
   
@@ -162,7 +167,9 @@ export async function generateShardedIndex(rootCID, shards) {
 
   return {
     indexBytes: archiveResult.ok,
-    shardIndices,
+    indexCID: root,
+    indexDigest: root.multihash,
+    shards,
     totalRequests,
   }
 }
