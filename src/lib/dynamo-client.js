@@ -10,6 +10,7 @@ import { config } from '../config.js'
 
 /**
  * Cached DynamoDB Document Client instance
+ * @type {DynamoDBDocumentClient | null}
  */
 let cachedClient = null
 
@@ -24,12 +25,16 @@ let cachedClient = null
  */
 export function getDynamoClient() {
   if (!cachedClient) {
+    const credentials = config.aws.accessKeyId && config.aws.secretAccessKey
+      ? {
+          accessKeyId: config.aws.accessKeyId,
+          secretAccessKey: config.aws.secretAccessKey,
+        }
+      : undefined
+
     const baseClient = new DynamoDBClient({
       region: config.aws.region,
-      credentials: config.aws.accessKeyId ? {
-        accessKeyId: config.aws.accessKeyId,
-        secretAccessKey: config.aws.secretAccessKey,
-      } : undefined,
+      credentials,
     })
     
     cachedClient = DynamoDBDocumentClient.from(baseClient)

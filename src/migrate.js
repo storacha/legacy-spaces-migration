@@ -293,7 +293,7 @@ async function migrateUpload(upload, options = {}) {
 
       // Use the original user's space for location claims (for egress billing)
       await republishLocationClaims({
-        space: upload.space, // Original space, not migration space
+        space: /** @type {import('@storacha/access').SpaceDID} */ (upload.space), // Original space, not migration space
         shards: status.shardsNeedingLocationClaims,
         shardsWithSizes, // Reuse from step 2 if available
       })
@@ -332,13 +332,15 @@ async function migrateUpload(upload, options = {}) {
 
     console.log(`\nSTEP 4: Create Gateway Authorization ${'─'.repeat(32)}`)
     if (status.needsGatewayAuth && shouldRunGatewayAuth) {
-      gatewayAuthResult = await createGatewayAuth({
+      const result = await createGatewayAuth({
         space: upload.space,
       })
 
-      if (gatewayAuthResult.ok) {
+      if (result.ok) {
+        gatewayAuthResult = result.ok
         console.log(`\n  Result: ✓ COMPLETE`)
       } else {
+        gatewayAuthResult = { success: false, error: result.error }
         console.log(`\n  Result: ✗ FAILED`)
       }
 
@@ -402,10 +404,11 @@ async function migrateUpload(upload, options = {}) {
 
 /**
  * Run migration mode - process multiple uploads
+ * @param {Record<string, any>} values - Parsed arguments
  */
 async function runMigrationMode(values) {
   // Determine test mode
-  let testMode = null
+  let testMode
   let modeLabel = 'Full Migration'
   const verifyOnly = values['verify-only'] || false
 
@@ -441,7 +444,7 @@ async function runMigrationMode(values) {
   console.log(`  Concurrency: ${concurrency}`)
   if (values['customers-file'])
     console.log(
-      `  Customers file: ${values['customers-file']} (${customers.length} customers)`
+      `  Customers file: ${values['customers-file']} (${customers?.length} customers)`
     )
   if (values.space) console.log(`  Space filter: ${values.space}`)
   if (values.customer) console.log(`  Customer filter: ${values.customer}`)
