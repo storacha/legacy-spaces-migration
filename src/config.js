@@ -5,10 +5,8 @@ import dotenv from 'dotenv'
 dotenv.config()
 import * as Signer from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
-import { index } from '@storacha/capabilities/assert'
 import { uriToMultiaddr } from '@multiformats/uri-to-multiaddr'
-import { peerIdFromBytes, peerIdFromString } from '@libp2p/peer-id'
-import { Delegation } from '@ucanto/core'
+import { peerIdFromString } from '@libp2p/peer-id'
 /**
  * Environment-specific defaults
  * @type {Record<string, {
@@ -239,7 +237,7 @@ export function validateConfig() {
   ]
 
   const missing = required
-    .filter(([name, value]) => !value)
+    .filter(([, value]) => !value)
     .map(([name]) => name)
 
   if (missing.length > 0) {

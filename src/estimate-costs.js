@@ -13,7 +13,7 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { validateConfig, config } from './config.js'
+import { validateConfig } from './config.js'
 import { sampleUploads } from './lib/tables/upload-table.js'
 import { getShardSize } from './lib/tables/shard-data-table.js'
 import { generateShardedIndex } from './lib/index-worker.js'
@@ -43,8 +43,12 @@ const PRICING = {
 
 /**
  * Analyze a sample of uploads and estimate costs by actually running the worker
+ * 
+ * @param {number} sampleSize - Number of uploads to sample
+ * @param {string} [spaceFilter] - Optional space filter
+ * @param {boolean} dryRun - Whether to run in dry run mode
  */
-async function estimateCosts(sampleSize, spaceFilter = null, dryRun = false) {
+async function estimateCosts(sampleSize, spaceFilter, dryRun = false) {
   console.log('Index Worker Cost Estimation')
   console.log('='.repeat(50))
   console.log(`Sample size: ${sampleSize}`)
@@ -52,6 +56,17 @@ async function estimateCosts(sampleSize, spaceFilter = null, dryRun = false) {
   if (spaceFilter) console.log(`Space filter: ${spaceFilter}`)
   console.log()
   
+  /**
+   * @type {{
+   *   totalUploads: number,
+   *   totalShards: number,
+   *   totalWorkerCalls: number,
+   *   totalExecutionTimeMs: number,
+   *   shardDistribution: Record<number, number>,
+   *   errors: number,
+   *   successfulIndexes: number
+   * }}
+   */
   const stats = {
     totalUploads: 0,
     totalShards: 0,
@@ -154,6 +169,17 @@ async function estimateCosts(sampleSize, spaceFilter = null, dryRun = false) {
 
 /**
  * Calculate costs based on statistics
+ * 
+ * @param {object} stats - Statistics from estimateCosts
+ * @param {number} stats.totalUploads - Total uploads sampled
+ * @param {number} stats.totalShards - Total shards sampled
+ * @param {number} stats.successfulIndexes - Successful indexes
+ * @param {number} stats.errors - Errors
+ * @param {number} stats.totalWorkerCalls - Total worker calls
+ * @param {number} stats.totalExecutionTimeMs - Total execution time (ms)
+ * @param {object} stats.shardDistribution - Shard distribution
+ * @param {number} totalUploadsInDB - Total uploads in database
+ * @param {boolean} dryRun - Whether to run in dry run mode
  */
 function calculateCosts(stats, totalUploadsInDB, dryRun) {
   console.log('Cost Estimation')

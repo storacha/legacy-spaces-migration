@@ -7,7 +7,6 @@
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
 import * as Space from '@storacha/access'
-import { SpaceDID } from '@storacha/access'
 import * as Signer from '@ucanto/principal/ed25519'
 import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
@@ -89,14 +88,14 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
  * 
  * @param {object} params
  * @param {string} params.customer - Customer account DID
- * @param {SpaceDID} params.migrationSpace - Migration space DID
+ * @param {import('@ucanto/principal/ed25519').Signer.EdSigner} params.migrationSpace - Migration space DID
  * @returns {Promise<void>}
  */
 export async function provisionMigrationSpace({ customer, migrationSpace }) {
   console.log(`    Provisioning space ${migrationSpace.did()} to customer account ${customer}...`)
   
   // Add the space to the consumer table
-  await provisionSpace(customer, migrationSpace)
+  await provisionSpace(customer, migrationSpace.did())
   
   // Mark as provisioned in our tracking table
   await markSpaceAsProvisioned(customer)
@@ -113,14 +112,12 @@ export async function provisionMigrationSpace({ customer, migrationSpace }) {
  * 
  * @param {object} params
  * @param {import('@ucanto/principal/ed25519').Signer.EdSigner} params.migrationSpace - Migration space signer
- * @param {SpaceDID} params.migrationSpaceDID - Migration space DID
  * @param {string} params.customer - Customer account DID (did:mailto:...)
  * @param {import('@ucanto/interface').Link} [params.cause] - CID of invocation that triggered this delegation
  * @returns {Promise<void>}
  */
 export async function delegateMigrationSpaceToCustomer({
   migrationSpace,
-  migrationSpaceDID,
   customer,
   cause,
 }) {
@@ -135,7 +132,7 @@ export async function delegateMigrationSpaceToCustomer({
     capabilities: [
       {
         can: 'space/*',
-        with: migrationSpaceDID,
+        with: migrationSpace.did(),
       }
     ],
     expiration: Infinity,
@@ -163,7 +160,7 @@ export async function delegateMigrationSpaceToCustomer({
  * @param {string[]} upload.shards - Shard CIDs
  * @returns {Promise<{
  *   indexBytes: Uint8Array,
- *   indexCID: import('multiformats').CID,
+ *   indexCID: import('multiformats').UnknownLink,
  *   indexDigest: import('multiformats').MultihashDigest,
  *   shards: Array<{cid: string, size: number}>
  * }>}

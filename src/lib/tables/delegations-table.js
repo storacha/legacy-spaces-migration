@@ -16,7 +16,13 @@ import { getErrorMessage } from '../error-utils.js'
 /**
  * Cached S3 clients
  */
+/**
+ * @type {import('@aws-sdk/client-s3').S3Client | null}
+ */
 let cachedS3Client = null
+/**
+ * @type {import('@aws-sdk/client-s3').S3Client | null}
+ */
 let cachedR2Client = null
 
 /**
@@ -25,6 +31,9 @@ let cachedR2Client = null
  */
 function getS3Client() {
   if (!cachedS3Client) {
+    if (!config.aws.region || !config.aws.accessKeyId || !config.aws.secretAccessKey) {
+      throw new Error('AWS configuration is missing')
+    }
     cachedS3Client = new S3Client({
       region: config.aws.region,
       credentials: config.aws.accessKeyId ? {
@@ -42,6 +51,9 @@ function getS3Client() {
  */
 function getR2Client() {
   if (!cachedR2Client) {
+    if (!config.storage.r2Endpoint || !config.storage.r2AccessKeyId || !config.storage.r2SecretAccessKey) {
+      throw new Error('R2 configuration is missing') 
+    }
     cachedR2Client = new S3Client({
       region: config.storage.r2Region,
       endpoint: config.storage.r2Endpoint,
@@ -57,7 +69,7 @@ function getR2Client() {
 /**
  * Create delegation S3 key in w3infra format
  * 
- * @param {import('multiformats/cid').CID} cid - Delegation CID
+ * @param {import('multiformats').UnknownLink} cid - Delegation CID
  * @returns {string} - S3 key: /delegations/{cid-base32}.car
  */
 function createDelegationsBucketKey(cid) {
@@ -181,11 +193,11 @@ export async function findDelegationByIssuer(spaceDID) {
         Key: key,
       })
       const r2Object = await r2Client.send(r2Command)
-      carBytes = await r2Object.Body.transformToByteArray()
+      carBytes = await r2Object.Body?.transformToByteArray()
       console.log(`      ✓ Fetched from R2: ${config.storage.r2DelegationBucket}`)
     } catch (r2Error) {
       // If R2 fails with NoSuchKey, try S3 fallback
-      if (r2Error.name === 'NoSuchKey') {
+      if (r2Error && typeof r2Error === 'object' && 'name' in r2Error && r2Error.name === 'NoSuchKey') {
         console.log(`      ℹ Not in R2, trying S3...`)
         try {
           const s3Command = new GetObjectCommand({
@@ -193,7 +205,7 @@ export async function findDelegationByIssuer(spaceDID) {
             Key: key,
           })
           const s3Object = await s3Client.send(s3Command)
-          carBytes = await s3Object.Body.transformToByteArray()
+          carBytes = await s3Object.Body?.transformToByteArray()
           console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
         } catch (s3Error) {
           console.error(`      ✗ Failed to fetch from both R2 and S3:`)
@@ -215,12 +227,16 @@ export async function findDelegationByIssuer(spaceDID) {
         Key: key,
       })
       const s3Object = await s3Client.send(s3Command)
-      carBytes = await s3Object.Body.transformToByteArray()
+      carBytes = await s3Object.Body?.transformToByteArray()
       console.log(`      ✓ Fetched from S3: ${config.storage.delegationBucket}`)
     } catch (s3Error) {
       console.error(`      ✗ Failed to fetch delegation ${link}:`, getErrorMessage(s3Error), { cause: s3Error })
       throw s3Error
     }
+  }
+
+  if (!carBytes) {
+    throw new Error(`Delegation ${link} not found in CAR file`)
   }
   
   // Parse delegation from CAR bytes
