@@ -26,8 +26,7 @@ import { base58btc } from 'multiformats/bases/base58'
  * @param {string} params.upload.space - Space DID
  * @param {string} params.upload.root - Root CID
  * @param {string[]} params.upload.shards - Shard CIDs
- * @param {object} [params.gatewayAuthResult] - Result from createGatewayAuth step
- * @param {boolean} [params.gatewayAuthResult.success] - Whether gateway auth succeeded
+ * @param {{success: boolean, [key: string]: any}|null} [params.gatewayAuthResult] - Result from createGatewayAuth step
  * @returns {Promise<{
  *   success: boolean,
  *   indexVerified: boolean,
@@ -88,7 +87,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
               return claim.space.did() === upload.space
             }
           } catch (err) {
-            console.warn(`    Error checking space for claim:`, err.message)
+            console.warn(`    Error checking space for claim:`, getErrorMessage(err))
           }
           return false
         })
@@ -105,7 +104,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
               shardsWithoutSpace.push(shardCID)
             }
           } catch (err) {
-            console.warn(`    Failed to check claims service: ${err.message}`)
+            console.warn(`    Failed to check claims service: ${getErrorMessage(err)}`)
             shardsWithoutSpace.push(shardCID)
           }
         }
