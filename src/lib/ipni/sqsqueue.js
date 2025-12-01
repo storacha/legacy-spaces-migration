@@ -14,7 +14,7 @@ import { ProviderResult } from './provider-result.js'
  *
  * @typedef {Object} PublishingJob
  * @property {AddrInfo} providerInfo - Peer address info
- * @property {string} contextID - Context ID string
+ * @property {Uint8Array} contextID - Context ID bytes
  * @property {import('multiformats/hashes/interface').MultihashDigest[]} digests - Array of multihashes
  * @property {Uint8Array} metadata - Serialized metadata bytes
  */

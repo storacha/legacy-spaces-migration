@@ -53,6 +53,7 @@ import {
 import { verifyMigration } from './lib/migration-verify.js'
 import { CID } from 'multiformats/cid'
 import { getErrorMessage } from './lib/error-utils.js'
+import { SpaceDID } from '@storacha/capabilities/utils'
 
 /**
  * Load customer list from a JSON file
@@ -293,7 +294,8 @@ async function migrateUpload(upload, options = {}) {
 
       // Use the original user's space for location claims (for egress billing)
       await republishLocationClaims({
-        space: /** @type {import('@storacha/access').SpaceDID} */ (upload.space), // Original space, not migration space
+        space: SpaceDID.from(upload.space), // Original space, not migration space
+        root: upload.root,
         shards: status.shardsNeedingLocationClaims,
         shardsWithSizes, // Reuse from step 2 if available
       })
@@ -332,15 +334,13 @@ async function migrateUpload(upload, options = {}) {
 
     console.log(`\nSTEP 4: Create Gateway Authorization ${'─'.repeat(32)}`)
     if (status.needsGatewayAuth && shouldRunGatewayAuth) {
-      const result = await createGatewayAuth({
-        space: upload.space,
+      gatewayAuthResult = await createGatewayAuth({
+        space: SpaceDID.from(upload.space),
       })
 
-      if (result.ok) {
-        gatewayAuthResult = result.ok
+      if (gatewayAuthResult.success) {
         console.log(`\n  Result: ✓ COMPLETE`)
       } else {
-        gatewayAuthResult = { success: false, error: result.error }
         console.log(`\n  Result: ✗ FAILED`)
       }
 
@@ -590,11 +590,12 @@ async function runMigrationMode(values) {
       })
 
     // Step failure breakdown
+    /** @type {Record<string, number>} */
     const stepFailures = {}
     results
       .filter((r) => !r.success && r.verification)
       .forEach((r) => {
-        const details = r.verification.details || r.error
+        const details = r.verification?.details || r.error
         if (details) {
           stepFailures[details] = (stepFailures[details] || 0) + 1
         }
