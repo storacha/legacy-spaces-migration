@@ -87,7 +87,7 @@ export async function createSpaceProgress({ customer, space, totalUploads, insta
   try {
     await client.send(command)
   } catch (error) {
-    // If already exists, that's OK (resume scenario)
+    // @ts-expect-error - If already exists, that's OK (resume scenario)
     if (error.name === 'ConditionalCheckFailedException') {
       return
     }
@@ -118,6 +118,7 @@ export async function updateSpaceProgress({ customer, space, completedUploads, l
   }
   
   if (lastProcessedUpload) {
+    // @ts-expect-error - Property ':lastUpload' does not exist on type '{ ':completed': number; ':now': string; }'.
     expressionValues[':lastUpload'] = lastProcessedUpload
   }
   

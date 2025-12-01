@@ -4,7 +4,8 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import * as Signer from '@ucanto/principal/ed25519'
-import { DID } from '@ucanto/core'
+import { DID, Delegation } from '@ucanto/core'
+import { CarReader } from '@ipld/car'
 import { uriToMultiaddr } from '@multiformats/uri-to-multiaddr'
 import { peerIdFromString } from '@libp2p/peer-id'
 /**
@@ -192,6 +193,8 @@ export const config = {
   },
 
   credentials: {
+    // Migration agent private key
+    migrationAgentPrivateKey: process.env.MIGRATION_AGENT_PRIVATE_KEY,
     // Service private key for publishing to upload service
     uploadServicePrivateKey: process.env.UPLOAD_SERVICE_PRIVATE_KEY,
     // Claims service private key for publishing location claims
@@ -280,6 +283,21 @@ export async function getUploadServiceSigner() {
 }
 
 /**
+ * Get the migration signer with the correct did:web identity
+ * Key: did:key:z6MkmjS2fNbyMz9NviLJ9owtSQK5569EbjvLRbFFim9NLLar
+ * 
+ * @returns {Promise<import('@ucanto/interface').Signer>}
+ */
+export async function getMigrationSigner() {
+  if (!config.credentials.migrationAgentPrivateKey) {
+    throw new Error('MIGRATION_AGENT_PRIVATE_KEY not configured')
+  }
+
+  const migrationKeyPair = Signer.parse(config.credentials.migrationAgentPrivateKey)
+  return migrationKeyPair
+}
+
+/**
  * Get the gateway signer with the correct did:web identity
  * @returns {Promise<import('@ucanto/interface').Signer>}
  */
@@ -307,4 +325,37 @@ export async function getPiriSigner() {
   /** Parse the private key and override with the did:web identity from environment config */
   const piriKeyPair = Signer.parse(config.credentials.piriPrivateKey)
   return piriKeyPair.withDID(DID.parse(config.services.piriServiceDID).did())
+}
+
+/**
+ * Get the indexing service proof
+ * @returns {Promise<import('@ucanto/interface').Delegation>}
+ */
+export async function getIndexingServiceProof() {
+  if (!config.credentials.indexingServiceProof) {
+    throw new Error('INDEXING_SERVICE_PROOF not configured')
+  }
+
+  // Decode base64 string
+  const bytes = Buffer.from(config.credentials.indexingServiceProof, 'base64')
+
+  // Read CAR
+  const reader = await CarReader.fromBytes(bytes)
+  const [root] = await reader.getRoots()
+
+  if (!root) {
+    throw new Error('Proof CAR has no roots')
+  }
+
+  // Collect all blocks
+  const blockMap = new Map()
+  for await (const block of reader.blocks()) {
+    blockMap.set(block.cid.toString(), block)
+  }
+
+  // Create Delegation view
+  return Delegation.view({
+    root: /** @type {any} */ (root),
+    blocks: blockMap,
+  })
 }
