@@ -39,13 +39,16 @@ import {
 import {
   config,
   getGatewaySigner,
+  getMigrationSigner,
   getPiriSigner,
   getUploadServiceSigner,
+  getIndexingServiceProof,
 } from '../config.js'
 import { LocationCommitmentMetadata } from './ipni/location.js'
 import { SQSPublishingQueue } from './ipni/sqsqueue.js'
 import { encodeContextID } from './ipni/advertisement.js'
 import { getErrorMessage } from './error-utils.js'
+import { URI } from '@ucanto/core/schema'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -151,7 +154,7 @@ export async function checkMigrationNeeded(upload) {
  * @param {string} params.upload.space - Original space DID (where content was uploaded)
  * @param {string} params.upload.root - Root CID (content to index)
  * @param {string[]} params.upload.shards - Shard CIDs (CAR files containing the content)
- * @returns {Promise<{migrationSpace: string, indexCID: import('multiformats').CID, shards: Array<{cid: string, size: number}>}>}
+ * @returns {Promise<{migrationSpace: string, indexCID: import('@storacha/access').CARLink, shards: Array<{cid: string, size: number}>}>}
  *   - migrationSpace: DID of the migration space where index was uploaded
  *   - indexCID: CID of the generated index
  *   - shards: Shards with sizes
@@ -164,10 +167,12 @@ export async function buildAndMigrateIndex({ upload }) {
   // Generate sharded DAG index for the content
   const { indexBytes, indexCID, indexDigest, shards } = await generateDAGIndex(upload)
 
-  const serviceSigner = await getUploadServiceSigner()
+  const uploadServiceSigner = await getUploadServiceSigner()
   const serviceURL = new URL(config.services.uploadServiceURL)
+  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+
   const connection = connect({
-    id: serviceSigner,
+    id: uploadServiceSigner,
     codec: CAR.outbound,
     channel: HTTP.open({ url: serviceURL }),
   })
@@ -197,14 +202,11 @@ export async function buildAndMigrateIndex({ upload }) {
   // Upload index blob to migration space via space/blob/add
   console.log(`    Uploading index blob (${indexBytes.length} bytes)...`)
 
-  // Parse the upload service DID for the audience
-  const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
-
   // Get the signer from the migration space
   const spaceSigner = migrationSpace.signer || migrationSpace
 
   try {
-    await SpaceBlob.add(
+    const blobAddResult = await SpaceBlob.add(
       {
         issuer: spaceSigner, // Sign with the space's signer (owner can self-authorize)
         with: migrationSpace.did(), // Upload to migration space
@@ -215,6 +217,10 @@ export async function buildAndMigrateIndex({ upload }) {
       indexBytes,
       { connection }
     )
+    if (!blobAddResult || !blobAddResult.site) {
+      throw new Error('Failed to upload index blob')
+    }
+
     console.log('    ✓ Index blob uploaded to migration space')
   } catch (error) {
     console.error('    ✗ Failed to upload index blob')
@@ -222,27 +228,30 @@ export async function buildAndMigrateIndex({ upload }) {
   }
 
   // CRITICAL: Publish location claim for the index CAR itself BEFORE registering
-  // The indexing service needs to fetch the index CAR, so it needs a location claim
+  // The indexing service needs to fetch the index CAR, so it needs a location claim.
+  // The index belongs to the migration space.
   console.log('    Publishing location claim for index CAR...')
   try {
     await republishLocationClaims({
-      space: /** @type {import('@storacha/access').SpaceDID} */ (upload.space),
-      // migrationSpaceDID,
+      space: migrationSpace.did(),
+      migrationSpace,
       root: indexCID.toString(),
-      shards: upload.shards,
+      shards: [indexCID.toString()],
+      shardsWithSizes: [{ cid: indexCID.toString(), size: indexBytes.length }],
     })
     console.log('    ✓ Index CAR location claim published')
   } catch (error) {
     console.error('    ✗ Failed to publish index CAR location claim')
     throw new Error(
       `Failed to publish index CAR location claim: ${getErrorMessage(error)}`,
-      {cause: error}
+      { cause: error }
     )
   }
 
   // Register index via space/index/add (publishes assert/index claim)
   console.log('    Registering index with indexing service...')
 
+  /** @type {any} */
   let indexInvocation
   try {
     indexInvocation = await Index.add(
@@ -256,6 +265,7 @@ export async function buildAndMigrateIndex({ upload }) {
       { connection }
     )
     console.log('    ✓ Index registered (assert/index claim published)')
+    console.log('    DEBUG: Index invocation:', indexInvocation)
   } catch (error) {
     console.log('    DEBUG: Index.add threw error:', getErrorMessage(error))
     console.log('    DEBUG: Error cause:', error instanceof Error ? JSON.stringify(error.cause, null, 2) : 'N/A')
@@ -271,11 +281,11 @@ export async function buildAndMigrateIndex({ upload }) {
     await delegateMigrationSpaceToCustomer({
       migrationSpace,
       customer,
-      cause: indexInvocation.cid, // Link delegation to index registration
+      cause: indexInvocation.ran, // Link delegation to index registration
     })
   }
 
-  return { migrationSpace: migrationSpaceDID, indexCID, shards }
+  return { migrationSpace: migrationSpace.did(), indexCID, shards }
 }
 
 /**
@@ -321,6 +331,7 @@ export async function registerIndex({ upload, indexCID }) {
 
   // Parse the upload service DID for the audience
   const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
+  /** @type {any} */
   let result
   try {
     result = await Index.add(
@@ -330,9 +341,10 @@ export async function registerIndex({ upload, indexCID }) {
         audience: uploadServiceDID, // Audience is the upload service DID
         proofs: [], // Empty proofs - space owner self-authorizes
       },
-      indexCID,
+      /** @type {any} */ (indexCID),
       { connection }
     )
+    console.log('    DEBUG: Index.add result:', result)
   } catch (error) {
     console.error('Index.add threw error:', getErrorMessage(error), {cause: error})
     throw error
@@ -364,12 +376,13 @@ export async function registerIndex({ upload, indexCID }) {
  * @param {import('@storacha/access').SpaceDID} params.space - Space DID
  * @param {string[]} params.shards - Shard CIDs (CAR files) to republish
  * @param {string} params.root - Root CID (index CAR)
- * @param {import('@storacha/access').SpaceDID} [params.migrationSpace] - Migration space DID
+ * @param {import('@storacha/access').OwnedSpace} [params.migrationSpace] - Migration space DID
  * @param {Array<{cid: string, size: number}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
  * @returns {Promise<void>}
  */
 export async function republishLocationClaims({
   space,
+  migrationSpace,
   root,
   shards,
   shardsWithSizes,
@@ -378,6 +391,9 @@ export async function republishLocationClaims({
 
   // Get claims service signer with the correct did:web identity
   const piriSigner = await getPiriSigner()
+
+  // Get indexing service proof (authorizes Piri to invoke claim/cache)
+  const indexingServiceProof = await getIndexingServiceProof()
 
   const indexingServiceURL = new URL(config.services.indexingServiceURL)
   // Parse the claims service DID from the URL (e.g., did:web:staging.claims.web3.storage)
@@ -414,23 +430,55 @@ export async function republishLocationClaims({
       const size =
         shardSizeMap?.get(shardCID) ?? (await getShardSize(space, shardCID))
 
-      // Parse CID to get digest
+      // Parse CID to get digest and codec
       const cid = CID.parse(shardCID)
-      const digest = cid.multihash.bytes
+      const digest = cid.multihash
+      const isCAR = cid.code === 0x0202 // car codec
 
-      // Construct location URL from carpark
-      // TODO: Use proper url based on wether it's store/blob protocol
-      const location = /** @type { import('@ucanto/client').URI } */ (
-        `${config.storage.carparkPublicUrl}/${base58btc.encode(
-          digest
-        )}/${base58btc.encode(digest)}.blob}`
-      )
+      // Determine protocol-specific values
+      let location
+      let providerAddrs
+
+      if (isCAR) {
+        // Store Protocol (CAR files)
+        // URL format: {carpark}/{cid}/{cid}.car
+        const locResult = URI.read(
+          `${config.storage.carparkPublicUrl}/${shardCID}/${shardCID}.car`
+        )
+        if (locResult.error) {
+          throw new Error(`Invalid location URI for CAR: ${locResult.error.message}`)
+        }
+        location = locResult.ok
+        providerAddrs = [
+          config.addresses.claimAddr.bytes,
+          // Store Protocol Address
+          config.addresses.storeProtocolBlobAddr.bytes,
+        ]
+      } else {
+        // Blob Protocol (Raw blobs)
+        // URL format: {carpark}/{digest}/{digest}.blob
+        const locResult = URI.read(
+          `${config.storage.carparkPublicUrl}/${base58btc.encode(
+            digest.bytes
+          )}/${base58btc.encode(digest.bytes)}.blob`
+        )
+        if (locResult.error) {
+          throw new Error(`Invalid location URI for Blob: ${locResult.error.message}`)
+        }
+        location = locResult.ok
+        providerAddrs = [
+          config.addresses.claimAddr.bytes,
+          // Blob Protocol Address
+          config.addresses.blobProtocolBlobAddr.bytes,
+        ]
+      }
 
       console.log(`    [DEBUG] Publishing location claim:`)
       console.log(`      Shard CID: ${shardCID}`)
-      console.log(`      Digest (base58btc): ${base58btc.encode(digest)}`)
+      console.log(`      Codec: 0x${cid.code.toString(16)} (${isCAR ? 'CAR' : 'Raw/Other'})`)
+      console.log(`      Digest (base58btc): ${base58btc.encode(digest.bytes)}`)
       console.log(`      Space: ${space}`)
-      console.log(`      Migration Space: ${migrationSpace}`)
+      console.log(`      Migration Space: ${migrationSpace ? migrationSpace.did() : 'N/A'}`)
       console.log(`      Location: ${location}`)
       console.log(`      Size: ${size}`)
       console.log(`      Indexing Service URL: ${indexingServiceURL}`)
@@ -445,7 +493,7 @@ export async function republishLocationClaims({
         audience: DID.parse(space),
         with: piriSigner.did(),
         nb: {
-          content: { digest },
+          content: { digest: digest.bytes },
           location: [location],
           range: { offset: 0, length: size },
           space: DID.parse(space), // space field included to enable egress tracking - parse as Principal
@@ -465,17 +513,11 @@ export async function republishLocationClaims({
         nb: {
           claim: claim.link(),
           provider: {
-            // TODO: Use proper blob addr based on wether it's store/blob protocol
-            addresses: [
-              config.addresses.claimAddr.bytes,
-              config.addresses.blobProtocolBlobAddr.bytes,
-            ],
+            addresses: providerAddrs,
           },
         },
         proofs: [
-          /** TODO: generate indexing service -> piri proof here 
-          see: https://gist.github.com/alanshaw/c1a3508311f015cc670db5f471e7b904
-          */
+          indexingServiceProof,
         ],
       })
       // Execute the invocation
@@ -501,15 +543,16 @@ export async function republishLocationClaims({
       }
 
       // Publish to IPNI via SQS
-      console.log(`    [DEBUG] Publishing to IPNI queue...`)
+      const claimCID = CID.parse(claim.link().toString())
+      console.log(`    [DEBUG] Publishing claim to IPNI queue, claim CID: ${claimCID}...`)
       const meta = new LocationCommitmentMetadata({
         shard: cid,
-        claim: claim.link(),
+        claim: claimCID,
         expiration: claim.expiration === Infinity ? 0n : BigInt(claim.expiration),
       })
       
       // Encode context ID (Space DID + Content Multihash) and send job to queue
-      const contextID = await encodeContextID(space, digest)
+      const contextID = await encodeContextID(space, digest.bytes)
       await queue.sendJob({
         providerInfo,
         contextID,
@@ -529,7 +572,7 @@ export async function republishLocationClaims({
         if (c.type !== 'assert/location') return false
         if (!c.content || !c.content.multihash) return false
         const claimDigest = base58btc.encode(c.content.multihash.bytes)
-        return claimDigest === base58btc.encode(digest)
+        return claimDigest === base58btc.encode(digest.bytes)
       })
       
       const hasClaimWithSpace = shardClaims.some(c => {
@@ -564,8 +607,8 @@ export async function republishLocationClaims({
  * Safe but not optimal. Future improvement: check existing delegations before creating new ones.
  *
  * @param {object} params
- * @param {string} params.space - Space DID
- * @returns {Promise<import('@ucanto/client').Result<{success: boolean, skipped: boolean, reason: string}>>}
+ * @param {import('@storacha/access').SpaceDID} params.space - Space DID
+ * @returns {Promise<{success: boolean, skipped: boolean, reason: string}>}
  */
 export async function createGatewayAuth({ space }) {
   console.log('  Creating gateway authorization...')
@@ -573,7 +616,7 @@ export async function createGatewayAuth({ space }) {
   // Setup signers and connections
   // Create a temporary migration signer to act as the "agent"
   const uploadServiceSigner = await getUploadServiceSigner()
-  const migrationSigner = await ed25519.Signer.generate()
+  const migrationSigner = await getMigrationSigner()
   const gatewaySigner = await getGatewaySigner()
   const gatewayConnection = connect({
     id: migrationSigner, // Connect as agent
@@ -603,7 +646,7 @@ export async function createGatewayAuth({ space }) {
         '       Gateway authorization will be skipped for this space.'
       )
       return {
-        ok: { success: false, skipped: true, reason: 'no-delegation-found' },
+        success: false, skipped: true, reason: 'no-delegation-found',
       }
     }
 
@@ -619,7 +662,6 @@ export async function createGatewayAuth({ space }) {
       issuer: Absentee.from({ id: accountDID }), // Account as Absentee issuer (no signature)
       audience: migrationSigner, // Gateway is the "agent" receiving delegation
       with: space,
-      nb: {}, // No additional caveats - allows serving all content
       proofs: [spaceAccessDelegation], // Proof that space delegated to account
       expiration: Infinity,
     })
@@ -692,7 +734,7 @@ export async function createGatewayAuth({ space }) {
           .reduce((fct, b) => {
             fct[b.cid.toString()] = b.cid
             return fct
-          }, {}),
+          }, /** @type {Record<string, unknown>} */ ({})),
       ],
     })
     // Attach all blocks for the delegations and attestations

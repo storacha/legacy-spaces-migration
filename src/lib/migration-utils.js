@@ -6,7 +6,8 @@
  */
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
-import * as Space from '@storacha/access'
+import { Space } from '@storacha/access'
+import { OwnedSpace } from '@storacha/access/space'
 import * as Signer from '@ucanto/principal/ed25519'
 import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
@@ -27,7 +28,7 @@ import { getErrorMessage } from './error-utils.js'
  * Creates one migration space per customer (reused across script runs)
  * 
  * @param {string} customer - Customer account DID (did:mailto:...)
- * @returns {Promise<{space: import('@ucanto/principal/ed25519').Signer.EdSigner, isNew: boolean, spaceDID: string}>}
+ * @returns {Promise<{space: import('@storacha/access').OwnedSpace, isNew: boolean, spaceDID: string}>}
  */
 export async function getOrCreateMigrationSpaceForCustomer(customer) {
   const existing = await getMigrationSpace(customer)
@@ -40,7 +41,7 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
       const signer = await Signer.parse(decryptedKey)
       
       // Wrap the signer in an OwnedSpace object to match the type returned by Space.generate()
-      const space = new Space.OwnedSpace({
+      const space = new OwnedSpace({
         signer,
         name: existing.spaceName,
       })
@@ -88,7 +89,7 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
  * 
  * @param {object} params
  * @param {string} params.customer - Customer account DID
- * @param {import('@ucanto/principal/ed25519').Signer.EdSigner} params.migrationSpace - Migration space DID
+ * @param {import('@storacha/access').OwnedSpace} params.migrationSpace - Migration space
  * @returns {Promise<void>}
  */
 export async function provisionMigrationSpace({ customer, migrationSpace }) {
@@ -111,7 +112,7 @@ export async function provisionMigrationSpace({ customer, migrationSpace }) {
  * The delegation is stored in DynamoDB + S3 for the customer to retrieve.
  * 
  * @param {object} params
- * @param {import('@ucanto/principal/ed25519').Signer.EdSigner} params.migrationSpace - Migration space signer
+ * @param {import('@storacha/access').OwnedSpace} params.migrationSpace - Migration space signer
  * @param {string} params.customer - Customer account DID (did:mailto:...)
  * @param {import('@ucanto/interface').Link} [params.cause] - CID of invocation that triggered this delegation
  * @returns {Promise<void>}
@@ -127,7 +128,7 @@ export async function delegateMigrationSpaceToCustomer({
   
   // Delegate full space access from migration space to customer account
   const delegation = await delegate({
-    issuer: migrationSpace,
+    issuer: migrationSpace.signer,
     audience: customerAccount,
     capabilities: [
       {
@@ -160,7 +161,7 @@ export async function delegateMigrationSpaceToCustomer({
  * @param {string[]} upload.shards - Shard CIDs
  * @returns {Promise<{
  *   indexBytes: Uint8Array,
- *   indexCID: import('multiformats').UnknownLink,
+ *   indexCID: import('@storacha/access').CARLink,
  *   indexDigest: import('multiformats').MultihashDigest,
  *   shards: Array<{cid: string, size: number}>
  * }>}

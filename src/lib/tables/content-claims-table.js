@@ -9,6 +9,7 @@ import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
 import { CID } from 'multiformats/cid'
 import { decode } from '@ipld/dag-cbor'
+import { getErrorMessage } from '../error-utils.js'
 
 const s3Client = new S3Client({ 
   region: config.aws.region,
@@ -84,6 +85,9 @@ export async function verifyLocationClaimWithSpace(shardCID, spaceDID) {
           Key: key,
         })
       )
+      if (!s3Response.Body) {
+        throw new Error(`Failed to fetch claim ${claimCID} from S3`)
+      }
       
       const claimBytes = await s3Response.Body.transformToByteArray()
       
@@ -132,7 +136,7 @@ export async function verifyLocationClaimWithSpace(shardCID, spaceDID) {
         }
       }
     } catch (err) {
-      console.log(`    [DEBUG] Error fetching/parsing claim ${claimCID}:`, err.message)
+      console.log(`    [DEBUG] Error fetching/parsing claim ${claimCID}:`, getErrorMessage(err))
     }
   }
   
