@@ -4,10 +4,11 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import * as Signer from '@ucanto/principal/ed25519'
-import { DID, Delegation } from '@ucanto/core'
-import { CarReader } from '@ipld/car'
+import { DID } from '@ucanto/core'
 import { uriToMultiaddr } from '@multiformats/uri-to-multiaddr'
 import { peerIdFromString } from '@libp2p/peer-id'
+import * as Proof from '@storacha/client/proof'
+
 /**
  * Environment-specific defaults
  * @type {Record<string, {
@@ -202,7 +203,7 @@ export const config = {
     gatewayPrivateKey: process.env.GATEWAY_PRIVATE_KEY,
     // PIRI private key for indexing service access
     piriPrivateKey: process.env.PIRI_PRIVATE_KEY,
-    // Indexing service private key
+    // Indexing service delegaiton proof
     indexingServiceProof: process.env.INDEXING_SERVICE_PROOF,
   },
 
@@ -321,26 +322,8 @@ export async function getIndexingServiceProof() {
     throw new Error('INDEXING_SERVICE_PROOF not configured')
   }
 
-  // Decode base64 string
-  const bytes = Buffer.from(config.credentials.indexingServiceProof, 'base64')
-
-  // Read CAR
-  const reader = await CarReader.fromBytes(bytes)
-  const [root] = await reader.getRoots()
-
-  if (!root) {
-    throw new Error('Proof CAR has no roots')
-  }
-
-  // Collect all blocks
-  const blockMap = new Map()
-  for await (const block of reader.blocks()) {
-    blockMap.set(block.cid.toString(), block)
-  }
-
-  // Create Delegation view
-  return Delegation.view({
-    root: /** @type {any} */ (root),
-    blocks: blockMap,
-  })
+  const delegation = await Proof.parse(config.credentials.indexingServiceProof)
+  
+  // Type casting to match expected return type if needed, though Proof.parse returns a Delegation
+  return /** @type {import('@ucanto/interface').Delegation} */ (delegation)
 }

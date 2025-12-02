@@ -1,10 +1,10 @@
 import { parseArgs } from 'node:util'
-import { DID } from '@ucanto/core'
 import { delegate } from '@ucanto/core'
 import * as ed25519 from '@ucanto/principal/ed25519'
 import * as Link from 'multiformats/link'
 import { identity } from 'multiformats/hashes/identity'
 import { base64 } from 'multiformats/bases/base64'
+import * as DID from '@ipld/dag-ucan/did'
 
 /**
  * Function copied from https://gist.github.com/alanshaw/c1a3508311f015cc670db5f471e7b904
@@ -34,6 +34,7 @@ const formatDelegation = async delegation => {
   const { ok: archive, error } = await delegation.archive()
   if (error) throw error
 
+  // Wrap in identity CID to match standard ucanto tooling (like ucan-kms)
   const digest = identity.digest(archive)
   const link = Link.create(0x0202, digest)
   return link.toString(base64)
