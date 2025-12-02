@@ -6,7 +6,9 @@
   "scripts": {
     "migrate": "node src/migrate.js",
     "estimate": "node src/estimate-costs.js",
-    "encryption:keygen": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\""
+    "encryption:keygen": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
+    "egress:verify": "node scripts/debug-egress-traffic.js",
+    "monitor": "node src/migration-monitor.js --watch"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.922.0",
