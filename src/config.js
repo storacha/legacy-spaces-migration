@@ -67,8 +67,7 @@ const ENVIRONMENTS = {
     claimsServiceDID: 'did:web:staging.claims.web3.storage',
     uploadService: 'https://staging.up.storacha.network',
     uploadServiceDID: 'did:web:staging.up.storacha.network',
-    gatewayService: 'https://freeway-fforbeck.protocol-labs.workers.dev',
-    // gatewayService: 'https://gateway.storacha.network',
+    gatewayService: 'https://gateway.storacha.network',
     gatewayServiceDID: 'did:web:staging.w3s.link',
     piriServiceDID: 'did:web:staging.storage.storacha.network',
     piriService: 'https://staging.storage.storacha.network',
@@ -134,11 +133,11 @@ export const config = {
   addresses: {
     peerID: peerIdFromString(process.env.PIRI_PEER_ID || env.piriPeerID),
     blobProtocolBlobAddr: createMultiAddr(
-      process.env.CARPARK_PUBLIC_URL || env.carparkPublicUrl,
+      process.env.BLOB_CARPARK_PUBLIC_URL || env.carparkPublicUrl,
       '{blob}/{blob}.blob'
     ),
     storeProtocolBlobAddr: createMultiAddr(
-      process.env.CARPARK_PUBLIC_URL || env.carparkPublicUrl,
+      process.env.STORE_CARPARK_PUBLIC_URL || env.carparkPublicUrl,
       '{blobCID}/{blobCID}.car'
     ),
     claimAddr: createMultiAddr(

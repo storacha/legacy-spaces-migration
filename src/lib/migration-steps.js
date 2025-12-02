@@ -504,6 +504,9 @@ export async function republishLocationClaims({
       await storeClaim(claim)
 
       console.log(`    [DEBUG] claim capabilities:`, claim.capabilities)
+      console.log(`    [DEBUG] indexing service proof issuer:`, indexingServiceProof.issuer.did() )
+      console.log(`    [DEBUG] indexing service proof audience:`, indexingServiceProof.audience.did() )
+      console.log(`    [DEBUG] indexing service proof capabilities:`, indexingServiceProof.capabilities.map(c => c.can) )
 
       const invocation = ClaimCapabilities.cache.invoke({
         issuer: piriSigner,
