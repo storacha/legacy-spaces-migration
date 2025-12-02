@@ -39,7 +39,6 @@ import {
   config,
   getGatewaySigner,
   getMigrationSigner,
-  getPiriSigner,
   getUploadServiceSigner,
   getIndexingServiceProof,
 } from '../config.js'
@@ -389,7 +388,7 @@ export async function republishLocationClaims({
   console.log(`  Republishing ${shards.length} location claims with space ${space}...`)
 
   // Get claims service signer with the correct did:web identity
-  const piriSigner = await getPiriSigner()
+  const piriSigner = await getMigrationSigner()
 
   // Get indexing service proof (authorizes Piri to invoke claim/cache)
   const indexingServiceProof = await getIndexingServiceProof()

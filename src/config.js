@@ -313,20 +313,6 @@ export async function getGatewaySigner() {
 }
 
 /**
- * Get the gateway signer with the correct did:web identity
- * @returns {Promise<import('@ucanto/interface').Signer>}
- */
-export async function getPiriSigner() {
-  if (!config.credentials.piriPrivateKey) {
-    throw new Error('PIRI_PRIVATE_KEY not configured')
-  }
-
-  /** Parse the private key and override with the did:web identity from environment config */
-  const piriKeyPair = Signer.parse(config.credentials.piriPrivateKey)
-  return piriKeyPair.withDID(DID.parse(config.services.piriServiceDID).did())
-}
-
-/**
  * Get the indexing service proof
  * @returns {Promise<import('@ucanto/interface').Delegation>}
  */
