@@ -5,6 +5,7 @@
   "description": "Migration tooling for legacy spaces to modern indexing system",
   "scripts": {
     "migrate": "node src/migrate.js",
+    "debug:index": "node scripts/debug-index-claim.js",
     "estimate": "node src/estimate-costs.js",
     "encryption:keygen": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
     "egress:verify": "node scripts/debug-egress-traffic.js",

@@ -11,10 +11,13 @@ import { base64 } from 'multiformats/bases/base64'
  * Issuer: indexingServiceDID
  * Audience: storageProviderDID
  */
-const delegateIndexingServiceToAudience = async (issuerPK, issuerDID, audienceDID) => {
-  const issuer = ed25519.parse(issuerPK).withDID(DID.parse(issuerDID))
-  const audience = DID.parse(audienceDID)
+const delegateIndexingServiceToAudience = async (issuer, audience) => {
+  console.log('======================== Generating Delegation ========================')
+  console.log('Issuer:', issuer.did())
+  console.log('Audience:', audience.did())
   const abilities = ['claim/cache']
+  console.log('Abilities:', abilities)
+  console.log('======================================================================')
 
   const delegation = await delegate({
     issuer,
@@ -55,8 +58,10 @@ async function main() {
     console.error('Usage: node scripts/generate-proof.js --issuer <base64-key> [--issuer-did <did:web:...>] --audience <did>')
     process.exit(1)
   }
+  const issuer = ed25519.parse(values.issuer).withDID(values['issuer-did'])
+  const audience = DID.parse(values.audience)
 
-  await delegateIndexingServiceToAudience(values.issuer, values['issuer-did'], values.audience)
+  await delegateIndexingServiceToAudience(issuer, audience)
 }
 
 main().catch(console.error)
