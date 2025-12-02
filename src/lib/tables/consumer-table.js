@@ -29,26 +29,23 @@ export async function getCustomerForSpace(space) {
   const client = getDynamoClient()
   
   // Try querying with each configured provider until we find the space
-  for (const provider of config.services.storageProviders) {
-    const command = new QueryCommand({
-      TableName: config.tables.consumer,
-      IndexName: 'consumerV2',
-      KeyConditionExpression: 'consumer = :consumer',
-      ExpressionAttributeValues: {
-        ':consumer': space,
-        ':provider': provider,
-      },
-      Limit: 1,
-    })
-    
-    const response = await client.send(command)
-    
-    if (response.Items && response.Items.length > 0) {
-      const customer = response.Items[0].customer
-      // Cache the result
-      customerCache.set(space, customer)
-      return customer
-    }
+  const command = new QueryCommand({
+    TableName: config.tables.consumer,
+    IndexName: 'consumerV2',
+    KeyConditionExpression: 'consumer = :consumer',
+    ExpressionAttributeValues: {
+      ':consumer': space,
+    },
+    Limit: 1,
+  })
+  
+  const response = await client.send(command)
+  
+  if (response.Items && response.Items.length > 0) {
+    const customer = response.Items[0].customer
+    // Cache the result
+    customerCache.set(space, customer)
+    return customer
   }
   
   // Not found in any provider

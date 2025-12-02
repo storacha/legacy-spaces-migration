@@ -166,7 +166,9 @@ export async function buildAndMigrateIndex({ upload }) {
   const { indexBytes, indexCID, indexDigest, shards } = await generateDAGIndex(upload)
 
   const uploadServiceSigner = await getUploadServiceSigner()
+  console.log(`    DEBUG: config.services.uploadServiceURL: '${config.services.uploadServiceURL}'`)
   const serviceURL = new URL(config.services.uploadServiceURL)
+  console.log(`    DEBUG: serviceURL: '${serviceURL.toString()}'`)
   const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
 
   const connection = connect({
@@ -388,18 +390,24 @@ export async function republishLocationClaims({
   console.log(`  Republishing ${shards.length} location claims with space ${space}...`)
 
   // Get claims service signer with the correct did:web identity
-  const piriSigner = await getMigrationSigner()
+  const migrationSigner = await getMigrationSigner()
 
   // Get indexing service proof (authorizes Piri to invoke claim/cache)
-  const indexingServiceProof = await getIndexingServiceProof()
+  /** @type {import('@ucanto/interface').Delegation} */
+  let indexingServiceProof
+  try {
+    indexingServiceProof = await getIndexingServiceProof()
+  } catch (err) {
+    console.error('Failed to load INDEXING_SERVICE_PROOF. Please check your .env file.')
+    throw err
+  }
 
   const indexingServiceURL = new URL(config.services.indexingServiceURL)
-  // Parse the claims service DID from the URL (e.g., did:web:staging.claims.web3.storage)
   const indexingServiceDID = config.services.indexingServiceDID
   const indexingServicePrincipal = DID.parse(indexingServiceDID)
 
   const indexingConnection = connect({
-    id: indexingServicePrincipal,
+    id: migrationSigner,
     codec: CAR.outbound,
     channel: HTTP.open({ url: indexingServiceURL }),
   })
@@ -480,16 +488,16 @@ export async function republishLocationClaims({
       console.log(`      Location: ${location}`)
       console.log(`      Size: ${size}`)
       console.log(`      Indexing Service URL: ${indexingServiceURL}`)
-      console.log(`      Issuer (Piri Signer): ${piriSigner.did()}`)
+      console.log(`      Issuer (Migration Signer): ${migrationSigner.did()}`)
       console.log(
         `      Audience (Indexing Service): ${indexingServicePrincipal.did()}`
       )
 
       // Create the invocation (matching upload-api pattern)
       const claim = await Assert.location.delegate({
-        issuer: piriSigner,
+        issuer: migrationSigner,
         audience: DID.parse(space),
-        with: piriSigner.did(),
+        with: migrationSigner.did(),
         nb: {
           content: { digest: digest.bytes },
           location: [location],
@@ -500,7 +508,18 @@ export async function republishLocationClaims({
         proofs: [], // Empty proofs since we're using the service private key to sign
       })
 
-      await storeClaim(claim)
+      // Store claim for audit/backup (non-blocking)
+      try {
+        // TODO: do we need to store claims in S3/R2?
+        // await storeClaim(claim)
+      } catch (storeError) {
+        console.warn(
+          `    ⚠️  Warning: Failed to store claim in S3 bucket (skipping): ${getErrorMessage(
+            storeError
+          )}`
+        )
+        throw storeError
+      }
 
       console.log(`    [DEBUG] claim capabilities:`, claim.capabilities)
       console.log(`    [DEBUG] indexing service proof issuer:`, indexingServiceProof.issuer.did() )
@@ -508,7 +527,7 @@ export async function republishLocationClaims({
       console.log(`    [DEBUG] indexing service proof capabilities:`, indexingServiceProof.capabilities.map(c => c.can) )
 
       const invocation = ClaimCapabilities.cache.invoke({
-        issuer: piriSigner,
+        issuer: migrationSigner,
         audience: indexingServicePrincipal,
         with: indexingServicePrincipal.did(),
         nb: {
@@ -519,6 +538,7 @@ export async function republishLocationClaims({
         },
         proofs: [
           indexingServiceProof,
+          claim, // Include the claim itself so its blocks are sent
         ],
       })
       // Execute the invocation
@@ -529,12 +549,6 @@ export async function republishLocationClaims({
 
       // Get the invocation CID from the receipt
       const invocationCID = result.ran?.toString()
-      console.log(`    [DEBUG] Invocation CID (from receipt): ${invocationCID}`)
-      console.log(
-        `    [DEBUG] Result:`,
-        result.out.ok ? 'SUCCESS' : `ERROR: ${result.out.error?.message}`
-      )
-
       if (result.out.error) {
         console.error('    ✗ Failed to republish location claim', result.out.error)
         throw new Error(
@@ -542,16 +556,16 @@ export async function republishLocationClaims({
           { cause: result.out }
         )
       }
+      console.log(`    ✓ New Location Claim Cached CID in Indexing Service: ${invocationCID}`)
 
-      // Publish to IPNI via SQS
       const claimCID = CID.parse(claim.link().toString())
-      console.log(`    [DEBUG] Publishing claim to IPNI queue, claim CID: ${claimCID}...`)
       const meta = new LocationCommitmentMetadata({
         shard: cid,
         claim: claimCID,
-        expiration: claim.expiration === Infinity ? 0n : BigInt(claim.expiration),
+        expiration:
+          claim.expiration === Infinity ? 0n : BigInt(claim.expiration),
       })
-      
+
       // Encode context ID (Space DID + Content Multihash) and send job to queue
       const contextID = await encodeContextID(space, digest.bytes)
       await queue.sendJob({
@@ -560,10 +574,8 @@ export async function republishLocationClaims({
         digests: [digest],
         metadata: await meta.marshalBinary(),
       })
-      
-      console.log(`    ✓ Published to IPNI queue`)
 
-      console.log(`    [DEBUG] Verifying claim via Indexing Service...`)
+      console.log(`    ✓ Published claim ${claimCID} to IPNI queue`)
 
       // Query indexing service for the root to see if this shard's claim is reflected
       const indexingData = await queryIndexingService(root)
@@ -584,11 +596,9 @@ export async function republishLocationClaims({
       })
 
       if (hasClaimWithSpace) {
-        console.log(`    ✅ Location Claim verified in Indexing Service!`)
+        console.log(`    ✓ Location Claim verified in Indexing Service!`)
       } else {
-        console.log(
-          `    ⚠️  WARNING: Location Claim not found in Indexing Service yet (might be propagating)`
-        )
+        throw new Error('Location Claim not found in Indexing Service yet')
       }
 
       console.log(`    ✓ ${shardCID}`)
