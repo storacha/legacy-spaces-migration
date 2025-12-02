@@ -1,7 +1,40 @@
 import { parseArgs } from 'node:util'
-import * as Signer from '@ucanto/principal/ed25519'
-import { Claim } from '@storacha/capabilities'
 import { DID } from '@ucanto/core'
+import { delegate } from '@ucanto/core'
+import * as ed25519 from '@ucanto/principal/ed25519'
+import * as Link from 'multiformats/link'
+import { identity } from 'multiformats/hashes/identity'
+import { base64 } from 'multiformats/bases/base64'
+
+/**
+ * Function copied from https://gist.github.com/alanshaw/c1a3508311f015cc670db5f471e7b904
+ * Issuer: indexingServiceDID
+ * Audience: storageProviderDID
+ */
+const delegateIndexingServiceToAudience = async (issuerPK, issuerDID, audienceDID) => {
+  const issuer = ed25519.parse(issuerPK).withDID(DID.parse(issuerDID))
+  const audience = DID.parse(audienceDID)
+  const abilities = ['claim/cache']
+
+  const delegation = await delegate({
+    issuer,
+    audience,
+    capabilities: abilities.map(can => ({ can, with: issuer.did(), nb: {} })),
+    expiration: Infinity
+  })
+
+  console.log(await formatDelegation(delegation))
+}
+
+/** @param {import('@ucanto/interface').Delegation} */
+const formatDelegation = async delegation => {
+  const { ok: archive, error } = await delegation.archive()
+  if (error) throw error
+
+  const digest = identity.digest(archive)
+  const link = Link.create(0x0202, digest)
+  return link.toString(base64)
+}
 
 /**
  * Generate a proof for the Indexing Service to authorize Piri to cache claims.
@@ -23,44 +56,7 @@ async function main() {
     process.exit(1)
   }
 
-  // 1. Parse Issuer
-  let issuer = Signer.parse(values.issuer)
-  
-  // If issuer-did is provided, wrap the signer to act as that DID (e.g. did:web)
-  if (values['issuer-did']) {
-    const did = DID.parse(values['issuer-did'])
-    issuer = issuer.withDID(did.did())
-  }
-  
-  console.log(`Issuer: ${issuer.did()}`)
-
-  // 2. Audience
-  const audience = DID.parse(values.audience)
-  console.log(`Audience: ${audience.did()}`)
-
-  // 3. Create Delegation
-  // Delegating 'claim/cache' capability
-  console.log('Creating delegation for claim/cache...')
-  const proof = await Claim.cache.delegate({
-    issuer,
-    audience,
-    with: issuer.did(), // Authorize for the indexing service DID
-    expiration: Infinity
-  })
-  
-  console.log(`Delegation CID: ${proof.cid}`)
-
-  // 4. Serialize to CAR
-  // Use archive() to get the CAR bytes
-  const archive = await proof.archive()
-  if (archive.error) {
-    throw new Error(`Failed to archive delegation: ${archive.error.message}`)
-  }
-  
-  const bytes = archive.ok
-
-  console.log('\nProof (Base64 CAR):')
-  console.log(Buffer.from(bytes).toString('base64'))
+  await delegateIndexingServiceToAudience(values.issuer, values['issuer-did'], values.audience)
 }
 
 main().catch(console.error)
