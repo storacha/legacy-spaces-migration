@@ -9,7 +9,6 @@
  */
 
 import { Blob as SpaceBlob, Index } from '@storacha/upload-client'
-import * as ed25519 from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
 import { connect } from '@ucanto/client'
 import * as CAR from '@ucanto/transport/car'
@@ -845,7 +844,8 @@ export async function verifyMigration({ upload }) {
       } else {
         // Check if ANY claim has space information matching this upload's space
         const hasClaimWithSpace = claims.some(
-          (claim) => claim.space != null && claim.space === upload.space
+          (/** @type {any} */ claim) =>
+            claim.space != null && claim.space === upload.space
         )
 
         if (hasClaimWithSpace) {

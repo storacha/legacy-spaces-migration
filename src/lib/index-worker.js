@@ -9,7 +9,7 @@ import { ShardedDAGIndex } from '@storacha/blob-index'
 import { base58btc } from 'multiformats/bases/base58'
 import { CID } from 'multiformats/cid'
 import * as Digest from 'multiformats/hashes/digest'
-import { getErrorMessage } from './error-utils'
+import { getErrorMessage } from './error-utils.js'
 
 const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.workers.dev'
 

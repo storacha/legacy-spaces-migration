@@ -85,6 +85,30 @@ CARPARK_PUBLIC_URL=https://carpark-prod-0.r2.w3s.link
 - `dynamodb:Scan` - Scan tables for sampling (optional)
 - See policy: `arn:aws:iam::505595374361:policy/legacy-spaces-migration-access`
 
+### 2.1 Generate Indexing Service Proof
+
+The migration agent requires authorization to cache claims in the Indexing Service. You must generate a proof delegation from the Indexing Service to the Migration Agent.
+
+1. Obtain the **Indexing Service Private Key** (Base64).
+2. Identify your **Migration Agent DID** (from `.env`).
+3. Run the generator script:
+
+```bash
+# For Staging
+node scripts/generate-proof.js \
+  --issuer <INDEXING_SERVICE_PRIVATE_KEY> \
+  --issuer-did did:web:staging.indexer.storacha.network \
+  --audience <MIGRATION_AGENT_DID>
+
+# For Production
+node scripts/generate-proof.js \
+  --issuer <INDEXING_SERVICE_PRIVATE_KEY> \
+  --issuer-did did:web:indexer.storacha.network \
+  --audience <MIGRATION_AGENT_DID>
+```
+
+4. Copy the output (Base64 CAR) to `INDEXING_SERVICE_PROOF` in your `.env` file.
+
 ### 3. Verify Configuration
 
 The script will display the active environment at startup:
