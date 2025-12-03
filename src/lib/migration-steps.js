@@ -21,6 +21,8 @@ import {
   Claim as ClaimCapabilities,
   UCAN,
 } from '@storacha/capabilities'
+import * as IndexCapabilities from '@storacha/capabilities/space/index'
+import * as ContentCapabilities from '@storacha/capabilities/space/content'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import * as Digest from 'multiformats/hashes/digest'
@@ -166,15 +168,13 @@ export async function buildAndMigrateIndex({ upload }) {
   const { indexBytes, indexCID, indexDigest, shards } = await generateDAGIndex(upload)
 
   const uploadServiceSigner = await getUploadServiceSigner()
-  console.log(`    DEBUG: config.services.uploadServiceURL: '${config.services.uploadServiceURL}'`)
-  const serviceURL = new URL(config.services.uploadServiceURL)
-  console.log(`    DEBUG: serviceURL: '${serviceURL.toString()}'`)
+  const uploadServiceURL = new URL(config.services.uploadServiceURL)
   const uploadServiceDID = DID.parse(config.services.uploadServiceDID)
 
   const connection = connect({
     id: uploadServiceSigner,
     codec: CAR.outbound,
-    channel: HTTP.open({ url: serviceURL }),
+    channel: HTTP.open({ url: uploadServiceURL }),
   })
 
   console.log('    Looking up customer for original space...')
@@ -249,26 +249,67 @@ export async function buildAndMigrateIndex({ upload }) {
   }
 
   // Register index via space/index/add (publishes assert/index claim)
+  // We invoke the capability directly (not using Index.add client) so we can
+  // include the content CID, which allows the upload-api to skip fetching the
+  // index and delegate to the indexer, avoiding queries to broken legacy data.
   console.log('    Registering index with indexing service...')
 
   /** @type {any} */
   let indexInvocation
   try {
-    indexInvocation = await Index.add(
-      {
-        issuer: spaceSigner, // Sign with the space's signer (owner can self-authorize)
-        with: migrationSpace.did(), // Register for migration space
-        audience: uploadServiceDID, // Audience is the upload service DID
-        proofs: [], // Empty proofs - space owner self-authorizes
+    // Parse the content root CID
+    const contentCID = CID.parse(upload.root)
+    
+    // Create a space/content/retrieve delegation for the index CAR
+    // This allows the indexing service to fetch the index blob
+    const retrievalAuth = await ContentCapabilities.retrieve.delegate({
+      issuer: spaceSigner,
+      audience: uploadServiceDID,
+      with: migrationSpace.did(),
+      nb: {
+        blob: {
+          digest: indexDigest.bytes,
+        },
+        range: [0, indexBytes.length - 1], // Full blob range
       },
-      indexCID,
-      { connection }
-    )
+      expiration: Infinity,
+    })
+    
+    // Prepare facts and attached blocks for the retrieval authorization
+    const facts = /** @type {Record<string, any>} */ ({
+      retrievalAuth: retrievalAuth.link(),
+    })
+    const attachedBlocks = /** @type {Map<string, any>} */ (new Map())
+    for (const block of retrievalAuth.export()) {
+      attachedBlocks.set(block.cid.toString(), block)
+      facts[block.cid.toString()] = block.cid
+    }
+    
+    // Invoke space/index/add capability directly with content field
+    indexInvocation = await IndexCapabilities.add
+      .invoke({
+        issuer: spaceSigner,
+        audience: uploadServiceDID,
+        with: migrationSpace.did(),
+        nb: {
+          index: indexCID,
+          content: contentCID, // Include content CID to skip index fetching
+        },
+        proofs: [],
+        facts: [facts],
+        attachedBlocks,
+      })
+      .execute(connection)
+    
+    // Check if the invocation succeeded
+    if (indexInvocation.out.error) {
+      console.error('    ✗ Index registration failed:', indexInvocation.out.error)
+      throw new Error(`Index registration rejected: ${JSON.stringify(indexInvocation.out.error)}`)
+    }
+    
     console.log('    ✓ Index registered (assert/index claim published)')
-    console.log('    DEBUG: Index invocation:', indexInvocation)
   } catch (error) {
-    console.log('    DEBUG: Index.add threw error:', getErrorMessage(error))
-    console.log('    DEBUG: Error cause:', error instanceof Error ? JSON.stringify(error.cause, null, 2) : 'N/A')
+    console.error('    ✗ Index.add error:', error)
     throw new Error(`Failed to register index: ${getErrorMessage(error)}`)
   }
 
@@ -299,12 +340,6 @@ export async function buildAndMigrateIndex({ upload }) {
  * @param {import('multiformats').CID} params.indexCID - CID of the index to register
  */
 export async function registerIndex({ upload, indexCID }) {
-  console.log('    DEBUG: registerIndex called with:')
-  console.log(
-    `    - upload.space: ${upload.space} (type: ${typeof upload.space})`
-  )
-  console.log(`    - indexCID: ${indexCID} (type: ${typeof indexCID})`)
-
   const serviceSigner = await getUploadServiceSigner()
   const serviceURL = new URL(config.services.uploadServiceURL)
   const connection = connect({
@@ -344,7 +379,6 @@ export async function registerIndex({ upload, indexCID }) {
       /** @type {any} */ (indexCID),
       { connection }
     )
-    console.log('    DEBUG: Index.add result:', result)
   } catch (error) {
     console.error('Index.add threw error:', getErrorMessage(error), {cause: error})
     throw error
@@ -382,17 +416,14 @@ export async function registerIndex({ upload, indexCID }) {
  */
 export async function republishLocationClaims({
   space,
-  migrationSpace,
-  root,
+  migrationSpace: _migrationSpace,
+  root: _root,
   shards,
   shardsWithSizes,
 }) {
   console.log(`  Republishing ${shards.length} location claims with space ${space}...`)
 
-  // Get claims service signer with the correct did:web identity
-  const migrationSigner = await getMigrationSigner()
-
-  // Get indexing service proof (authorizes Piri to invoke claim/cache)
+    // Get indexing service proof (authorizes Piri to invoke claim/cache)
   /** @type {import('@ucanto/interface').Delegation} */
   let indexingServiceProof
   try {
@@ -405,9 +436,10 @@ export async function republishLocationClaims({
   const indexingServiceURL = new URL(config.services.indexingServiceURL)
   const indexingServiceDID = config.services.indexingServiceDID
   const indexingServicePrincipal = DID.parse(indexingServiceDID)
+  const uploadServiceSigner = await getUploadServiceSigner()
 
   const indexingConnection = connect({
-    id: migrationSigner,
+    id: uploadServiceSigner,
     codec: CAR.outbound,
     channel: HTTP.open({ url: indexingServiceURL }),
   })
@@ -479,25 +511,13 @@ export async function republishLocationClaims({
         ]
       }
 
-      console.log(`    [DEBUG] Publishing location claim:`)
-      console.log(`      Shard CID: ${shardCID}`)
-      console.log(`      Codec: 0x${cid.code.toString(16)} (${isCAR ? 'CAR' : 'Raw/Other'})`)
-      console.log(`      Digest (base58btc): ${base58btc.encode(digest.bytes)}`)
-      console.log(`      Space: ${space}`)
-      console.log(`      Migration Space: ${migrationSpace ? migrationSpace.did() : 'N/A'}`)
-      console.log(`      Location: ${location}`)
-      console.log(`      Size: ${size}`)
-      console.log(`      Indexing Service URL: ${indexingServiceURL}`)
-      console.log(`      Issuer (Migration Signer): ${migrationSigner.did()}`)
-      console.log(
-        `      Audience (Indexing Service): ${indexingServicePrincipal.did()}`
-      )
+      console.log(`    Publishing location claim for ${shardCID}...`)
 
       // Create the invocation (matching upload-api pattern)
       const claim = await Assert.location.delegate({
-        issuer: migrationSigner,
+        issuer: uploadServiceSigner,
         audience: DID.parse(space),
-        with: migrationSigner.did(),
+        with: uploadServiceSigner.did(),
         nb: {
           content: { digest: digest.bytes },
           location: [location],
@@ -521,11 +541,7 @@ export async function republishLocationClaims({
         throw storeError
       }
 
-      console.log(`    [DEBUG] claim capabilities:`, claim.capabilities)
-      console.log(`    [DEBUG] indexing service proof issuer:`, indexingServiceProof.issuer.did() )
-      console.log(`    [DEBUG] indexing service proof audience:`, indexingServiceProof.audience.did() )
-      console.log(`    [DEBUG] indexing service proof capabilities:`, indexingServiceProof.capabilities.map(c => c.can) )
-
+      const migrationSigner = await getMigrationSigner()
       const invocation = ClaimCapabilities.cache.invoke({
         issuer: migrationSigner,
         audience: indexingServicePrincipal,
@@ -541,22 +557,16 @@ export async function republishLocationClaims({
           claim, // Include the claim itself so its blocks are sent
         ],
       })
-      // Execute the invocation
-      console.log(`    [DEBUG] Executing invocation...`)
+      
       const result = await invocation.execute(indexingConnection)
-      console.log(`    [DEBUG]`)
-      console.log(result)
 
-      // Get the invocation CID from the receipt
-      const invocationCID = result.ran?.toString()
       if (result.out.error) {
-        console.error('    ✗ Failed to republish location claim', result.out.error)
+        console.error('    ✗ Failed to cache location claim:', result.out.error)
         throw new Error(
           `Failed to republish location claim: ${getErrorMessage(result.out.error)}`,
           { cause: result.out }
         )
       }
-      console.log(`    ✓ New Location Claim Cached CID in Indexing Service: ${invocationCID}`)
 
       const claimCID = CID.parse(claim.link().toString())
       const meta = new LocationCommitmentMetadata({
@@ -574,32 +584,6 @@ export async function republishLocationClaims({
         digests: [digest],
         metadata: await meta.marshalBinary(),
       })
-
-      console.log(`    ✓ Published claim ${claimCID} to IPNI queue`)
-
-      // Query indexing service for the root to see if this shard's claim is reflected
-      const indexingData = await queryIndexingService(root)
-      
-      // Find location claims for this shard
-      const shardClaims = indexingData.claims.filter(c => {
-        if (c.type !== 'assert/location') return false
-        if (!c.content || !c.content.multihash) return false
-        const claimDigest = base58btc.encode(c.content.multihash.bytes)
-        return claimDigest === base58btc.encode(digest.bytes)
-      })
-      
-      const hasClaimWithSpace = shardClaims.some(c => {
-        // Check for space matching - handle different formats if needed
-        if (!c.space) return false
-        const claimSpace = typeof c.space === 'string' ? c.space : c.space.did()
-        return claimSpace === space
-      })
-
-      if (hasClaimWithSpace) {
-        console.log(`    ✓ Location Claim verified in Indexing Service!`)
-      } else {
-        throw new Error('Location Claim not found in Indexing Service yet')
-      }
 
       console.log(`    ✓ ${shardCID}`)
     } catch (error) {

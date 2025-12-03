@@ -3,6 +3,7 @@
  */
 import dotenv from 'dotenv'
 dotenv.config()
+
 import * as Signer from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
 import { uriToMultiaddr } from '@multiformats/uri-to-multiaddr'
@@ -17,16 +18,16 @@ import * as Proof from '@storacha/client/proof'
  *  carparkBucket: string,
  *  carparkPublicUrl: string,
  *  claimsBucket: string,
- *  indexingService: string,
+ *  indexingServiceURL: string,
  *  indexingServiceDID: string,
- *  contentClaims: string,
+ *  contentClaimsURL: string,
  *  claimsServiceDID: string,
- *  uploadService: string,
+ *  uploadServiceURL: string,
  *  uploadServiceDID: string,
- *  gatewayService: string,
+ *  gatewayServiceURL: string,
  *  gatewayServiceDID: string,
  *  piriServiceDID: string,
- *  piriService: string,
+ *  piriServiceURL: string,
  *  piriPeerID: string,
  *  storageProviders: string[],
  *  ipniPublishingBucket: string,
@@ -40,16 +41,16 @@ const ENVIRONMENTS = {
     carparkBucket: 'carpark-prod-0',
     carparkPublicUrl: 'https://carpark-prod-0.r2.w3s.link',
     claimsBucket: 'prod-storage-claim-store-bucket',
-    indexingService: 'https://indexer.storacha.network',
+    indexingServiceURL: 'https://indexer.storacha.network',
     indexingServiceDID: 'did:web:indexer.storacha.network',
-    contentClaims: 'https://claims.web3.storage',
+    contentClaimsURL: 'https://claims.web3.storage',
     claimsServiceDID: 'did:web:claims.web3.storage',
-    uploadService: 'https://up.storacha.network',
+    uploadServiceURL: 'https://up.storacha.network',
     uploadServiceDID: 'did:web:up.storacha.network',
-    gatewayService: 'https://storacha.link',
+    gatewayServiceURL: 'https://storacha.link',
     gatewayServiceDID: 'did:web:w3s.link',
     piriServiceDID: 'did:web:storage.storacha.network',
-    piriService: 'https://storage.storacha.network',
+    piriServiceURL: 'https://storage.storacha.network',
     piriPeerID: '12D3KooWLiYS7k5GnBcngSRHemu98HQ1yqzJdYQcqqa2kpDDX9hf',
     storageProviders: ['did:web:up.storacha.network', 'did:web:web3.storage'],
     ipniPublishingBucket: 'prod-storage-ipni-publisher',
@@ -62,16 +63,16 @@ const ENVIRONMENTS = {
     carparkBucket: 'carpark-staging-0',
     carparkPublicUrl: 'https://carpark-staging-0.r2.w3s.link',
     claimsBucket: 'staging-storage-claim-store-bucket',
-    indexingService: 'https://staging.indexer.storacha.network',
+    indexingServiceURL: 'https://staging.indexer.storacha.network',
     indexingServiceDID: 'did:web:staging.indexer.storacha.network',
-    contentClaims: 'https://staging.claims.web3.storage',
+    contentClaimsURL: 'https://staging.claims.web3.storage',
     claimsServiceDID: 'did:web:staging.claims.web3.storage',
-    uploadService: 'https://staging.up.storacha.network',
+    uploadServiceURL: 'https://staging.up.storacha.network',
     uploadServiceDID: 'did:web:staging.up.storacha.network',
-    gatewayService: 'https://gateway.storacha.network',
+    gatewayServiceURL: 'https://gateway.storacha.network',
     gatewayServiceDID: 'did:web:staging.w3s.link',
     piriServiceDID: 'did:web:staging.storage.storacha.network',
-    piriService: 'https://staging.storage.storacha.network',
+    piriServiceURL: 'https://staging.storage.storacha.network',
     piriPeerID: '12D3KooWPMQTKSMA3eFUxc23gBfMHEgzfk7W1TBezKNsBwPMRLQ7',
 
     storageProviders: [
@@ -142,24 +143,24 @@ export const config = {
       '{blobCID}/{blobCID}.car'
     ),
     claimAddr: createMultiAddr(
-      process.env.PIRI_SERVICE_URL || env.piriService,
+      process.env.PIRI_SERVICE_URL || env.piriServiceURL,
       'claim/{claim}'
     ),
   },
 
   services: {
-    indexingServiceURL: process.env.INDEXING_SERVICE_URL || env.indexingService,
+    indexingServiceURL: process.env.INDEXING_SERVICE_URL || env.indexingServiceURL,
     indexingServiceDID:
       process.env.INDEXING_SERVICE_DID || env.indexingServiceDID,
     contentClaimsServiceURL:
-      process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaims,
+      process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaimsURL,
     claimsServiceDID: process.env.CLAIMS_SERVICE_DID || env.claimsServiceDID,
-    uploadServiceURL: process.env.UPLOAD_SERVICE_URL || env.uploadService,
+    uploadServiceURL: process.env.UPLOAD_SERVICE_URL || env.uploadServiceURL,
     uploadServiceDID: process.env.UPLOAD_SERVICE_DID || env.uploadServiceDID,
-    gatewayServiceURL: process.env.GATEWAY_SERVICE_URL || env.gatewayService,
+    gatewayServiceURL: process.env.GATEWAY_SERVICE_URL || env.gatewayServiceURL,
     gatewayServiceDID: process.env.GATEWAY_SERVICE_DID || env.gatewayServiceDID,
     piriServiceDID: process.env.PIRI_SERVICE_DID || env.piriServiceDID,
-    piriServiceURL: process.env.PIRI_SERVICE_URL || env.piriService,
+    piriServiceURL: process.env.PIRI_SERVICE_URL || env.piriServiceURL,
     storageProviders: env.storageProviders, // Provider DIDs for querying consumer table
   },
 
