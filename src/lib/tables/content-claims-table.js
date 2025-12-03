@@ -18,6 +18,7 @@ const s3Client = new S3Client({
 
 /**
  * Query location claims for a shard CID and check if a claim with the given space exists
+ * We only this method if we want to verify existing location claims in the Content Claims service.
  * 
  * @param {string} shardCID - Shard CID (e.g., bagbaiera...)
  * @param {string} spaceDID - Space DID to look for in claims
@@ -35,10 +36,6 @@ export async function verifyLocationClaimWithSpace(shardCID, spaceDID) {
   // Parse shard CID to get multihash
   const cid = CID.parse(shardCID)
   const contentKey = base58btc.encode(cid.multihash.bytes)
-  
-  console.log(`    [DEBUG] Querying DynamoDB table: ${tableName}`)
-  console.log(`    [DEBUG] Content key (base58btc): ${contentKey}`)
-  console.log(`    [DEBUG] S3 bucket: ${bucketName}`)
   
   // Query DynamoDB for all claims for this content
   const docClient = getDynamoClient()
