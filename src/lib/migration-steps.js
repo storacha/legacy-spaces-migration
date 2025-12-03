@@ -31,7 +31,6 @@ import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
 import { getShardSize } from './tables/shard-data-table.js'
 import { findDelegationByIssuer } from './tables/delegations-table.js'
-import { storeClaim } from './stores/claim-store.js'
 import {
   getOrCreateMigrationSpaceForCustomer,
   delegateMigrationSpaceToCustomer,
@@ -45,7 +44,7 @@ import {
   getIndexingServiceProof,
 } from '../config.js'
 import { LocationCommitmentMetadata } from './ipni/location.js'
-import { SQSPublishingQueue } from './ipni/sqsqueue.js'
+import { getIPNIPublishingQueue } from './queues/ipni-publishing-queue.js'
 import { encodeContextID } from './ipni/advertisement.js'
 import { getErrorMessage } from './error-utils.js'
 import { URI } from '@ucanto/core/schema'
@@ -449,22 +448,6 @@ export async function republishLocationClaims({
     ? new Map(shardsWithSizes.map((s) => [s.cid, s.size]))
     : null
 
-  // Initialize IPNI publishing queue: TODO: extract to global scope
-  const queue = new SQSPublishingQueue({
-    queueUrl: config.queues.ipniPublishingQueue,
-    bucketName: config.storage.ipniPublishingBucket,
-  })
-
-  // Provider info for IPNI advertisement
-  const providerInfo = {
-    id: config.addresses.peerID,
-    addrs: [
-      config.addresses.claimAddr, 
-      config.addresses.blobProtocolBlobAddr,
-      config.addresses.storeProtocolBlobAddr,
-    ],
-  }
-
   // Republish location claim for each shard
   for (const shardCID of shards) {
     try {
@@ -582,6 +565,17 @@ export async function republishLocationClaims({
 
       // Encode context ID (Space DID + Content Multihash) and send job to queue
       const contextID = await encodeContextID(space, digest.bytes)
+      // Provider info for IPNI advertisement
+      const providerInfo = {
+        id: config.addresses.peerID,
+        addrs: [
+          config.addresses.claimAddr, 
+          config.addresses.blobProtocolBlobAddr,
+          config.addresses.storeProtocolBlobAddr,
+        ],
+      }
+      // Get singleton IPNI publishing queue instance
+      const queue = getIPNIPublishingQueue()
       await queue.sendJob({
         providerInfo,
         contextID,
