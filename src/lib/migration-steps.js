@@ -439,7 +439,7 @@ export async function republishLocationClaims({
   const uploadServiceSigner = await getUploadServiceSigner()
 
   const indexingConnection = connect({
-    id: uploadServiceSigner,
+    id:indexingServicePrincipal,
     codec: CAR.outbound,
     channel: HTTP.open({ url: indexingServiceURL }),
   })
@@ -449,7 +449,7 @@ export async function republishLocationClaims({
     ? new Map(shardsWithSizes.map((s) => [s.cid, s.size]))
     : null
 
-  // Initialize IPNI publishing queue
+  // Initialize IPNI publishing queue: TODO: extract to global scope
   const queue = new SQSPublishingQueue({
     queueUrl: config.queues.ipniPublishingQueue,
     bucketName: config.storage.ipniPublishingBucket,
@@ -458,7 +458,11 @@ export async function republishLocationClaims({
   // Provider info for IPNI advertisement
   const providerInfo = {
     id: config.addresses.peerID,
-    addrs: [config.addresses.claimAddr, config.addresses.blobProtocolBlobAddr],
+    addrs: [
+      config.addresses.claimAddr, 
+      config.addresses.blobProtocolBlobAddr,
+      config.addresses.storeProtocolBlobAddr,
+    ],
   }
 
   // Republish location claim for each shard

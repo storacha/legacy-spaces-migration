@@ -6,7 +6,7 @@ dotenv.config()
 
 import * as Signer from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
-import { uriToMultiaddr } from '@multiformats/uri-to-multiaddr'
+import { multiaddr } from '@multiformats/multiaddr'
 import { peerIdFromString } from '@libp2p/peer-id'
 import * as Proof from '@storacha/client/proof'
 
@@ -228,8 +228,27 @@ export const config = {
  * @returns {import('@multiformats/multiaddr').Multiaddr}
  */
 function createMultiAddr(baseUrl, path) {
-  const url = new URL(path, baseUrl)
-  return uriToMultiaddr(url.toString())
+  // Parse base URL to get host
+  const url = new URL(baseUrl)
+  const host = url.hostname
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  const protocol = url.protocol === 'https:' ? 'tls' : ''
+  
+  // Encode the path component once - this will turn {blob} into %7Bblob%7D
+  const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('%2F')
+  
+  // Build multiaddr string manually
+  const parts = [
+    `/dns/${host}`,
+    `/tcp/${port}`,
+    protocol ? `/${protocol}` : '',
+    '/http',
+    `/http-path/${encodedPath}`
+  ].filter(Boolean)
+  
+  const multiAddrString = parts.join('')
+  const addr = multiaddr(multiAddrString)
+  return addr
 }
 /**
  * Validate required configuration
