@@ -85,6 +85,7 @@ export async function queryIndexingService(contentCID) {
     }
   } catch (error) {
     console.error(`Error querying indexing service for ${contentCID}:`, error)
+    console.warn(`  ⚠️  Migration will proceed - Step 2 will republish location claims with correct provider metadata`)
     return {
       hasIndexClaim: false,
       hasLocationClaim: false,

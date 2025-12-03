@@ -48,10 +48,8 @@ import {
   buildAndMigrateIndex,
   republishLocationClaims,
   createGatewayAuth,
-  registerIndex,
 } from './lib/migration-steps.js'
 import { verifyMigration } from './lib/migration-verify.js'
-import { CID } from 'multiformats/cid'
 import { getErrorMessage } from './lib/error-utils.js'
 import { SpaceDID } from '@storacha/capabilities/utils'
 
