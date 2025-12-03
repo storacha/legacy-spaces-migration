@@ -10,6 +10,7 @@ import { getDynamoClient } from '../dynamo-client.js'
 import { CID } from 'multiformats/cid'
 import { decode } from '@ipld/dag-cbor'
 import { getErrorMessage } from '../error-utils.js'
+import { getSpaceFromCapability } from '../claim-utils.js'
 
 const s3Client = new S3Client({ 
   region: config.aws.region,
@@ -28,18 +29,16 @@ const s3Client = new S3Client({
  * }>}
  */
 export async function verifyLocationClaimWithSpace(shardCID, spaceDID) {
-  const tableName = `${config.environment}-content-claims-claims-v1`
-  // Use the actual deployed bucket name from config
-  // SST generates bucket names, they're not predictable from environment alone
-  const bucketName = config.storage.claimsBucket || `${config.environment}-content-claims-claims-v1`
+  const tableName = config.tables.contentClaims
+  const bucketName = config.storage.claimsBucket
   
   // Parse shard CID to get multihash
-  
   const cid = CID.parse(shardCID)
   const contentKey = base58btc.encode(cid.multihash.bytes)
   
   console.log(`    [DEBUG] Querying DynamoDB table: ${tableName}`)
   console.log(`    [DEBUG] Content key (base58btc): ${contentKey}`)
+  console.log(`    [DEBUG] S3 bucket: ${bucketName}`)
   
   // Query DynamoDB for all claims for this content
   const docClient = getDynamoClient()
@@ -106,26 +105,10 @@ export async function verifyLocationClaimWithSpace(shardCID, spaceDID) {
               if (capability.can === 'assert/location') {
                 hasLocationClaim = true
                 
-                // Check if nb.space matches our space
-                if (capability.nb && capability.nb.space) {
-                  let claimSpace = null
-                  
-                  if (typeof capability.nb.space === 'string') {
-                    claimSpace = capability.nb.space
-                  } else if (typeof capability.nb.space?.did === 'function') {
-                    claimSpace = capability.nb.space.did()
-                  } else if (capability.nb.space instanceof Uint8Array) {
-                    // Space is stored as raw bytes (multicodec-encoded public key)
-                    // Convert to did:key string using base58btc encoding
-                    claimSpace = `did:key:${base58btc.encode(capability.nb.space)}`
-                  }
-                  
-                  console.log(`    [DEBUG] Found claim ${claimCID} with space: ${claimSpace}`)
-                  
-                  if (claimSpace === spaceDID) {
-                    hasClaimWithSpace = true
-                    console.log(`    [DEBUG] ✓ Claim matches target space!`)
-                  }
+                // Extract space DID from capability using shared utility
+                const claimSpace = getSpaceFromCapability(capability)
+                if (claimSpace && claimSpace === spaceDID) {
+                  hasClaimWithSpace = true
                 }
               }
             }

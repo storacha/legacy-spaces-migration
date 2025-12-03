@@ -48,6 +48,8 @@ import { getIPNIPublishingQueue } from './queues/ipni-publishing-queue.js'
 import { encodeContextID } from './ipni/advertisement.js'
 import { getErrorMessage } from './error-utils.js'
 import { URI } from '@ucanto/core/schema'
+import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
+import { storeClaim } from './stores/claim-store.js'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -90,32 +92,17 @@ export async function checkMigrationNeeded(upload) {
   const shardsNeedingLocationClaims = []
 
   for (const shardCID of upload.shards) {
-    const cid = CID.parse(shardCID)
-    const multihashStr = base58btc.encode(cid.multihash.bytes)
-
-    // Find location claims for this shard by matching multihash
-    const shardLocationClaims = allLocationClaims.filter((claim) => {
-      if (
-        !claim.content ||
-        !claim.content.multihash ||
-        !claim.content.multihash.bytes
-      ) {
-        return false
-      }
-      const claimContentMultihash = base58btc.encode(
-        claim.content.multihash.bytes
-      )
-      return claimContentMultihash === multihashStr
-    })
+    // Find location claims for this shard using shared utility
+    const shardLocationClaims = findClaimsForShard(allLocationClaims, shardCID)
 
     if (shardLocationClaims.length === 0) {
       // No location claim exists for this shard
       shardsNeedingLocationClaims.push(shardCID)
       console.log(`    ✗ ${shardCID}: no location claim found`)
     } else {
-      // Check if at least one claim has the correct space
+      // Check if at least one claim has the correct space using shared utility
       const hasClaimWithCorrectSpace = shardLocationClaims.some(
-        (claim) => claim.space != null && claim.space.did() === upload.space
+        (claim) => claimHasSpace(claim, upload.space)
       )
 
       if (!hasClaimWithCorrectSpace) {
@@ -517,8 +504,7 @@ export async function republishLocationClaims({
 
       // Store claim for audit/backup (non-blocking)
       try {
-        // TODO: do we need to store claims in S3/R2?
-        // await storeClaim(claim)
+        await storeClaim(claim)
       } catch (storeError) {
         console.warn(
           `    ⚠️  Warning: Failed to store claim in S3 bucket (skipping): ${getErrorMessage(

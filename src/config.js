@@ -122,6 +122,9 @@ export const config = {
       process.env.SUBSCRIPTION_TABLE_NAME || `${env.tablePrefix}-subscription`, // Billing subscriptions (customer -> provider relationship)
     delegation:
       process.env.DELEGATION_TABLE_NAME || `${env.tablePrefix}-delegation`, // Delegation storage
+    contentClaims:
+      process.env.CONTENT_CLAIMS_TABLE_NAME ||
+      `${process.env.STORACHA_ENV || 'production'}-content-claims-claims-v1`, // Content claims (location claims with space info)
     migrationSpaces:
       process.env.MIGRATION_SPACES_TABLE_NAME ||
       `${process.env.STORACHA_ENV || 'prod'}-migration-spaces`, // Migration space tracking
