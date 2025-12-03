@@ -7,6 +7,7 @@ import { verifyLocationClaimWithSpace } from './tables/content-claims-table.js'
 import { getErrorMessage } from './error-utils.js'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
+import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
 
 /**
  * Verify that all migration steps completed successfully
@@ -44,14 +45,15 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
     const rootData = await queryIndexingService(upload.root)
     const indexVerified = rootData.hasIndexClaim
     
-    // Get all location claims from the root query
-    const allLocationClaims = rootData.claims.filter(c => c.type === 'assert/location')
-    
-    // Check each shard to see if it has a location claim with the correct space
+    // Check each content shard to see if it has a location claim with the correct space
+    // We need to query each shard individually since location claims are indexed by shard multihash
     const shardsWithoutSpace = []
     let allShardsHaveLocationClaims = true
     
     for (const shardCID of upload.shards) {
+      // Query the indexing service for THIS shard specifically
+      const shardData = await queryIndexingService(shardCID)
+      const allLocationClaims = shardData.claims.filter(c => c.type === 'assert/location')
       const cid = CID.parse(shardCID)
       const multihashStr = base58btc.encode(cid.multihash.bytes)
       
@@ -59,14 +61,8 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       console.log(`    Multihash: ${multihashStr}`)
       console.log(`    Total location claims from indexer: ${allLocationClaims.length}`)
       
-      // Find location claims for this shard by matching multihash
-      const shardLocationClaims = allLocationClaims.filter((claim) => {
-        if (!claim.content || !claim.content.multihash || !claim.content.multihash.bytes) {
-          return false
-        }
-        const claimContentMultihash = base58btc.encode(claim.content.multihash.bytes)
-        return claimContentMultihash === multihashStr
-      })
+      // Find location claims for this shard using shared utility (same logic as checkMigrationNeeded)
+      const shardLocationClaims = findClaimsForShard(allLocationClaims, shardCID)
       
       console.log(`    Matching location claims for this shard: ${shardLocationClaims.length}`)
       
@@ -74,39 +70,13 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
         allShardsHaveLocationClaims = false
         shardsWithoutSpace.push(shardCID)
         console.log(`    ✗ No location claims found for this shard`)
-      } else {
-        // Check if at least one claim has the correct space
-        const hasClaimWithSpace = shardLocationClaims.some(claim => {
-          if (!claim.space) return false
-          
-          try {
-            // Handle different space formats
-            if (typeof claim.space === 'string') {
-              return claim.space === upload.space
-            } else if (typeof claim.space.did === 'function') {
-              return claim.space.did() === upload.space
-            }
-          } catch (err) {
-            console.warn(`    Error checking space for claim:`, getErrorMessage(err))
-          }
-          return false
-        })
-        
+      } 
+      else {
+        // Check if at least one claim has the correct space using shared utility (same logic as checkMigrationNeeded)
+        const hasClaimWithSpace = shardLocationClaims.some(claim => claimHasSpace(claim, upload.space))
         if (!hasClaimWithSpace) {
-          // Fallback: Check Content Claims Service (DynamoDB) directly
-          // The indexing service might be lagging behind due to caching/propagation
-          console.log(`    ⚠️  Shard ${shardCID} missing space in indexer, checking claims service...`)
-          try {
-            const verifyResult = await verifyLocationClaimWithSpace(shardCID, upload.space)
-            if (verifyResult.hasClaimWithSpace) {
-              console.log(`    ✅ Found claim with space in claims service!`)
-            } else {
-              shardsWithoutSpace.push(shardCID)
-            }
-          } catch (err) {
-            console.warn(`    Failed to check claims service: ${getErrorMessage(err)}`)
-            shardsWithoutSpace.push(shardCID)
-          }
+          console.log(`    ⚠️  Shard ${shardCID} missing location claim with space information in indexer`)
+          shardsWithoutSpace.push(shardCID)
         }
       }
     }
