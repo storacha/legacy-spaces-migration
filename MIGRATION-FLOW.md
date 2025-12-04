@@ -13,7 +13,7 @@ sequenceDiagram
     participant Indexing Service as Indexing Service
     participant Index Worker as Index Worker<br/>(HTTP API)
     participant Upload Service as Upload Service<br/>(UCAN)
-    participant Content Claims as Content Claims<br/>(DynamoDB + S3)
+    participant S3 Bucket as S3 Bucket<br/>(Claims Storage)
     participant IPNI as IPNI Queue<br/>(SQS)
     participant Gateway as Gateway Service<br/>(UCAN)
     
@@ -62,8 +62,11 @@ sequenceDiagram
             Script->>Upload Service: space/blob/add<br/>(index blob to migration space)
             Upload Service-->>Script: Blob allocated
             
-            Script->>Content Claims: Publish location claim<br/>(for index CAR itself)
-            Content Claims-->>Script: Claim stored
+            Note right of Script: Publish location claim for index CAR<br/>(indexing service needs to fetch it)
+            Script->>Script: Create assert/location delegation<br/>(with space DID)
+            Script->>S3 Bucket: Store delegation CAR (audit/backup)
+            Script->>Indexing Service: claim/cache invocation<br/>(with delegation as proof)
+            Script->>IPNI: Publish location metadata
             
             Script->>Upload Service: space/index/add<br/>(root → index CID)
             Upload Service-->>Script: Index registered
@@ -76,16 +79,10 @@ sequenceDiagram
         Note over Script,Gateway: STEP 3: Republish Location Claims with Space
         alt Location Claims Missing Space
             loop For each shard needing space
-                Script->>Script: Create assert/location claim<br/>with space DID in nb.space
-                
-                Script->>Content Claims: PUT claim (DynamoDB)
-                Content Claims-->>Script: Claim stored
-                
-                Script->>Content Claims: PUT claim CAR (S3)
-                Content Claims-->>Script: CAR stored
-                
+                Script->>Script: Create assert/location delegation<br/>(with space DID in nb.space)
+                Script->>S3 Bucket: Store delegation CAR (audit/backup)
+                Script->>Indexing Service: claim/cache invocation<br/>(with delegation as proof)
                 Script->>IPNI: Publish location metadata<br/>(space + hash → contextID)
-                IPNI-->>Script: Queued for indexing
             end
             
             Note right of Script: Indexing service will<br/>pick up new claims
@@ -114,22 +111,13 @@ sequenceDiagram
         end
         
         Note over Script,Gateway: STEP 5: Verify Migration
-        Script->>Indexing Service: Re-query index claim
+        Script->>Indexing Service: Query index claim for root
         Indexing Service-->>Script: Index claim verified
         
         loop For each shard
-            Script->>Indexing Service: Re-query location claims
-            Indexing Service-->>Script: Location claims with space
-            
-            alt Space Missing in Indexer
-                Script->>Content Claims: Fallback: Query DynamoDB directly
-                Content Claims-->>Script: Claims with space info
-                
-                Script->>Content Claims: Fetch claim CAR from S3
-                Content Claims-->>Script: Parse CBOR blocks
-                
-                Script->>Script: Verify space in capability.nb.space
-            end
+            Script->>Indexing Service: Query location claims for shard
+            Indexing Service-->>Script: Location claims
+            Script->>Script: Check if claim has space
         end
         
         Script->>Script: Verify gateway auth result
@@ -206,4 +194,4 @@ The verification step ensures:
 3. ✅ Location claims include space information
 4. ✅ Gateway authorization succeeded (based on step result)
 
-If indexing service doesn't show space info yet (propagation delay), falls back to querying DynamoDB + S3 directly.
+All verification is done by querying the indexing service directly.

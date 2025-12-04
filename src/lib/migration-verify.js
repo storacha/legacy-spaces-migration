@@ -3,7 +3,6 @@
  * Checks that all migration steps completed successfully
  */
 import { queryIndexingService } from './indexing-service.js'
-import { verifyLocationClaimWithSpace } from './tables/content-claims-table.js'
 import { getErrorMessage } from './error-utils.js'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
