@@ -146,8 +146,8 @@ async function migrateUpload(upload, options = {}) {
     console.log(`MIGRATING UPLOAD`)
   }
   console.log('━'.repeat(70))
-  console.log(`Root:   ${upload.root}`)
   console.log(`Space:  ${upload.space}`)
+  console.log(`Root:   ${upload.root}`)
   console.log(`Shards: ${upload.shards.length}`)
 
   // If upload.shards is empty, extract original content shards from the index
@@ -502,6 +502,8 @@ async function runMigrationMode(values) {
 
   const results = []
   let processed = 0
+  const processedSpaces = new Set()
+  const spacesWithFailures = new Set()
 
   // If --cid is provided, fetch and process that single upload
   if (values.cid) {
@@ -544,13 +546,12 @@ async function runMigrationMode(values) {
     if (targetSpaces && targetSpaces.length > 0) {
       // Iterate through each space to sample uploads based on the specified limit
       for (const space of targetSpaces) {
-        console.log(`\nProcessing space: ${space}`)
-        
         for await (const upload of sampleUploads({
           limit: limit,
           space: space,
         })) {
           processed++
+          processedSpaces.add(space)
 
           const result = await migrateUpload(upload, {
             testMode,
@@ -558,6 +559,10 @@ async function runMigrationMode(values) {
             uploadNumber: processed,
             totalUploads: limit,
           })
+
+          if (!result.success) {
+            spacesWithFailures.add(space)
+          }
 
           results.push(result)
 
@@ -579,62 +584,54 @@ async function runMigrationMode(values) {
     }
   }
 
-  // Print summary
-  console.log()
-  console.log('━'.repeat(70))
-  console.log('📈 MIGRATION SUMMARY')
-  console.log('━'.repeat(70))
-
+  // Calculate statistics
   const successful = results.filter((r) => r.success).length
   const failed = results.filter((r) => !r.success).length
   const alreadyMigrated = results.filter((r) => r.alreadyMigrated).length
-  const testModeResults = results.filter((r) => r.testMode).length
-  const verifyOnlyResults = results.filter((r) => r.verifyOnly).length
 
   const successRate =
     results.length > 0 ? Math.round((successful / results.length) * 100) : 0
   const failureRate =
     results.length > 0 ? Math.round((failed / results.length) * 100) : 0
+  
+  const spacesWithFailuresRate =
+    processedSpaces.size > 0 ? Math.round((spacesWithFailures.size / processedSpaces.size) * 100) : 0
+  const spacesWithoutFailuresRate =
+    processedSpaces.size > 0 ? Math.round(((processedSpaces.size - spacesWithFailures.size) / processedSpaces.size) * 100) : 0
 
-  console.log(`Total processed:     ${results.length}`)
-  console.log(`✓ Successful:        ${successful} (${successRate}%)`)
-  console.log(`✗ Failed:            ${failed} (${failureRate}%)`)
-  console.log(`⏭  Already migrated: ${alreadyMigrated}`)
-
-  if (verifyOnly) {
-    const verifyPassed = results.filter((r) => r.verifyOnly && r.success).length
-    const verifyFailed = results.filter(
-      (r) => r.verifyOnly && !r.success
-    ).length
-    console.log(`\nVerification Results:`)
-    console.log(`  Total verified:    ${verifyOnlyResults}`)
-    if (verifyPassed > 0) {
-      console.log(`  ✅ Passed:         ${verifyPassed}`)
-    }
-    if (verifyFailed > 0) {
-      console.log(`  ❌ Failed:          ${verifyFailed}`)
-    }
-
-    // If all passed, add celebration
-    if (verifyFailed === 0 && verifyPassed > 0) {
-      console.log()
-      console.log(`  ${'='.repeat(20)}`)
-      console.log(`  ✅ ALL VERIFICATIONS PASSED!!!`)
-      console.log(`  ${'='.repeat(20)}`)
-    }
-  } else if (testMode) {
-    console.log(`\nTest mode (${testMode}): ${testModeResults}`)
-  }
-
+  // Print failures first
   if (failed > 0) {
     console.log()
     console.log(`Failed Uploads (${failed}):`)
+    
+    // Group failures by space
+    /** @type {Map<string, Array<{upload: string, error: string}>>} */
+    const failuresBySpace = new Map()
+    
     results
       .filter((r) => !r.success)
       .forEach((r) => {
-        console.log(`  ✗ ${r.upload}`)
-        console.log(`    └─ ${r.error}`)
+        const space = r.space || 'unknown'
+        if (!failuresBySpace.has(space)) {
+          failuresBySpace.set(space, [])
+        }
+        const failures = failuresBySpace.get(space)
+        if (failures) {
+          failures.push({
+            upload: r.upload || 'unknown',
+            error: r.error || 'unknown error'
+          })
+        }
       })
+    
+    // Print failures grouped by space
+    for (const [space, failures] of failuresBySpace) {
+      console.log(`\n  Space: ${space}`)
+      failures.forEach(({ upload, error }) => {
+        console.log(`    ✗ ${upload}`)
+        console.log(`      └─ ${error}`)
+      })
+    }
 
     // Step failure breakdown
     /** @type {Record<string, number>} */
@@ -658,6 +655,42 @@ async function runMigrationMode(values) {
         )
       })
     }
+  }
+
+  // Print summary after failures
+  console.log()
+  console.log('━'.repeat(70))
+  console.log('📈 MIGRATION SUMMARY')
+  console.log('━'.repeat(70))
+
+  console.log(`\nSpaces:`)
+  console.log(`  Total processed:     ${processedSpaces.size}`)
+  if (spacesWithFailures.size > 0) {
+    console.log(`  With failures:       ${spacesWithFailures.size} (${spacesWithFailuresRate}%)`)
+    console.log(`  Without failures:    ${processedSpaces.size - spacesWithFailures.size} (${spacesWithoutFailuresRate}%)`)
+  }
+  
+  console.log(`\nUploads:`)
+  console.log(`  Total processed:     ${results.length}`)
+  if (verifyOnly) {
+    console.log(`  ✅ Verified (passed):  ${successful} (${successRate}%)`)
+    console.log(`  ❌ Verified (failed):  ${failed} (${failureRate}%)`)
+    
+    // If all passed, add celebration
+    if (failed === 0 && successful > 0) {
+      console.log()
+      console.log(`  ${'='.repeat(30)}`)
+      console.log(`  ✅ ALL VERIFICATIONS PASSED!!!`)
+      console.log(`  ${'='.repeat(30)}`)
+    }
+  } else if (testMode) {
+    console.log(`  Mode: Test (${testMode})`)
+    console.log(`  ✅ Successful:        ${successful} (${successRate}%)`)
+    console.log(`  ❌ Failed:            ${failed} (${failureRate}%)`)
+  } else {
+    console.log(`  ✅ Migrated:          ${successful} (${successRate}%)`)
+    console.log(`  ❌ Failed:            ${failed} (${failureRate}%)`)
+    console.log(`  ⏭  Already migrated: ${alreadyMigrated}`)
   }
 
   // Save results to file
@@ -704,8 +737,7 @@ async function main() {
       limit: {
         type: 'string',
         short: 'l',
-        default: '10',
-        description: 'Number of uploads to process',
+        description: 'Number of uploads to process (default: 10 for sampling, unlimited for filters)',
       },
       space: {
         type: 'string',
