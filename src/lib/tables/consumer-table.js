@@ -1,10 +1,11 @@
 /**
  * Query Consumer Table to get space ownership (space -> customer mapping)
  */
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb'
+import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { CBOR } from '@ucanto/core'
 import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
+import { getErrorMessage } from '../error-utils.js'
 
 // Cache for space -> customer lookups
 // Reset per migration run (not persistent across restarts)
@@ -12,6 +13,7 @@ const customerCache = new Map()
 
 /**
  * Get customer (account) DID for a given space (with caching)
+ * It uses the consumerV2 index to be able to retrieve the customer from the space
  * 
  * @param {string} space - Space DID (consumer)
  * @returns {Promise<string | null>} - Customer DID (did:mailto:...) or null if not found
@@ -22,40 +24,33 @@ export async function getCustomerForSpace(space) {
     return customerCache.get(space)
   }
   
-  // Query DynamoDB
+  // Query DynamoDB using the consumer GSI
+  // The consumer table has composite key (subscription, provider) but consumer is indexed via GSI
   const client = getDynamoClient()
   
-  const command = new GetCommand({
+  // Try querying with each configured provider until we find the space
+  const command = new QueryCommand({
     TableName: config.tables.consumer,
-    Key: { consumer: space },
+    IndexName: 'consumerV2',
+    KeyConditionExpression: 'consumer = :consumer',
+    ExpressionAttributeValues: {
+      ':consumer': space,
+    },
+    Limit: 1,
   })
   
   const response = await client.send(command)
   
-  const customer = response.Item?.customer || null
-  
-  // Cache the result (even if null to avoid repeated failed lookups)
-  customerCache.set(space, customer)
-  
-  return customer
-}
-
-/**
- * Get cache statistics for monitoring
- * 
- * @returns {{ size: number, hitRate: number }}
- */
-export function getCacheStats() {
-  return {
-    size: customerCache.size,
+  if (response.Items && response.Items.length > 0) {
+    const customer = response.Items[0].customer
+    // Cache the result
+    customerCache.set(space, customer)
+    return customer
   }
-}
-
-/**
- * Clear the cache (useful for testing)
- */
-export function clearCache() {
-  customerCache.clear()
+  
+  // Not found in any provider
+  customerCache.set(space, null)
+  return null
 }
 
 /**
@@ -64,7 +59,7 @@ export function clearCache() {
  * Follows w3infra's exact pattern: subscription = CID(CBOR({ consumer: space }))
  * Note: The CBOR payload uses "consumer" as the key to match w3infra's implementation.
  * 
- * @param {string} space - Space DID (consumer)
+ * @param {import('@storacha/access').SpaceDID} space - Space DID (consumer)
  * @returns {Promise<string>} - Subscription ID (CID as string)
  */
 async function createProvisionSubscriptionId(space) {
@@ -76,20 +71,59 @@ async function createProvisionSubscriptionId(space) {
 }
 
 /**
+ * Get all spaces belonging to a customer
+ * 
+ * @param {string} customer - Customer DID (did:mailto:...)
+ * @returns {Promise<string[]>} - Array of space DIDs
+ */
+export async function getSpacesForCustomer(customer) {
+  const client = getDynamoClient()
+  /** @type {string[]} */
+  const spaces = []
+  /** @type {Record<string, any> | undefined} */
+  let lastEvaluatedKey
+  
+  while (true) {
+    const command = new QueryCommand({
+      TableName: config.tables.consumer,
+      IndexName: 'customer',
+      KeyConditionExpression: 'customer = :customer',
+      ExpressionAttributeValues: {
+        ':customer': customer,
+      },
+      ProjectionExpression: 'consumer',
+      ExclusiveStartKey: lastEvaluatedKey,
+    })
+    
+    const response = await client.send(command)
+    if (response.Items && response.Items.length > 0) {
+      spaces.push(...response.Items.map((/** @type {any} */ item) => item.consumer))
+    }
+    
+    lastEvaluatedKey = response.LastEvaluatedKey
+    if (!lastEvaluatedKey) {
+      break
+    }
+  }
+  
+  return spaces
+}
+
+/**
  * Provision a space to a customer (direct DB write for migration)
  * 
  * This bypasses the provider/add UCAN invocation and writes directly to DynamoDB.
  * Creates both subscription and consumer records, following w3infra's pattern.
  * 
  * @param {string} customer - Customer account DID (did:mailto:...)
- * @param {string} space - Space DID (did:key:...)
+ * @param {import('@storacha/access').SpaceDID} space - Space DID (did:key:...)
  * @param {string} [provider] - Provider DID (default: service DID from config)
  * @returns {Promise<void>}
  */
 export async function provisionSpace(customer, space, provider) {
   const client = getDynamoClient()
   
-  const providerDID = provider || config.credentials.serviceDID
+  const providerDID = provider || config.services.uploadServiceDID
   const now = new Date().toISOString()
   
   // Generate subscription ID deterministically from consumer (space)
@@ -112,11 +146,11 @@ export async function provisionSpace(customer, space, provider) {
     await client.send(subscriptionCommand)
     console.log(`    ✓ Created subscription ${subscription}`)
   } catch (error) {
-    if (error.name === 'ConditionalCheckFailedException') {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'ConditionalCheckFailedException') {
       console.log(`    ⊘ Subscription already exists`)
       // Continue to create consumer record
     } else {
-      throw new Error(`Failed to create subscription: ${error.message}`)
+      throw new Error(`Failed to create subscription: ${getErrorMessage(error)}`)
     }
   }
   
@@ -138,10 +172,10 @@ export async function provisionSpace(customer, space, provider) {
     await client.send(consumerCommand)
     console.log(`    ✓ Provisioned space ${space} to ${customer}`)
   } catch (error) {
-    if (error.name === 'ConditionalCheckFailedException') {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'ConditionalCheckFailedException') {
       console.log(`    ⊘ Space already provisioned`)
       return
     }
-    throw new Error(`Failed to provision space: ${error.message}`)
+    throw new Error(`Failed to provision space: ${getErrorMessage(error)}`)
   }
 }

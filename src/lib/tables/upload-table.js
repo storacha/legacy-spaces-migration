@@ -11,14 +11,16 @@ import { getDynamoClient } from '../dynamo-client.js'
  * @param {object} options
  * @param {number} options.limit - Maximum number of uploads to return
  * @param {string} [options.space] - Filter by specific space DID
- * @returns {AsyncGenerator<{space: string, root: string, shards: string[], insertedAt: string}>}
+ * @returns {AsyncGenerator<{space: string, root: string, shards: string[], insertedAt: string, updatedAt: string}>}
  */
 export async function* sampleUploads({ limit, space }) {
   const client = getDynamoClient()
   let count = 0
+  /** @type {Record<string, any> | undefined} */
   let lastEvaluatedKey
   
   while (count < limit) {
+    /** @type {QueryCommand | ScanCommand} */
     const command = space
       ? new QueryCommand({
           TableName: config.tables.upload,
@@ -38,8 +40,8 @@ export async function* sampleUploads({ limit, space }) {
           ExclusiveStartKey: lastEvaluatedKey,
         })
     
+    /** @type {import('@aws-sdk/lib-dynamodb').QueryCommandOutput | import('@aws-sdk/lib-dynamodb').ScanCommandOutput} */
     const response = await client.send(command)
-    
     if (!response.Items || response.Items.length === 0) {
       break
     }
@@ -71,7 +73,13 @@ export async function* sampleUploads({ limit, space }) {
  * 
  * @param {string} space - Space DID
  * @param {string} root - Root CID
- * @returns {Promise<{space: string, root: string, shards: string[]} | null>}
+ * @returns {Promise<{
+ *   space: string,
+ *   root: string,
+ *   shards: string[],
+ *   insertedAt: string,
+ *   updatedAt: string
+ * } | null>}
  */
 export async function getUpload(space, root) {
   const client = getDynamoClient()
@@ -101,6 +109,7 @@ export async function getUpload(space, root) {
     root: upload.root,
     shards: upload.shards ? Array.from(upload.shards) : [],
     insertedAt: upload.insertedAt,
+    updatedAt: upload.updatedAt,
   }
 }
 
@@ -108,7 +117,13 @@ export async function getUpload(space, root) {
  * Get upload by root CID using the global secondary index
  * 
  * @param {string} root - Root CID
- * @returns {Promise<{space: string, root: string, shards: string[]} | null>}
+ * @returns {Promise<{
+ *   space: string,
+ *   root: string,
+ *   shards: string[],
+ *   insertedAt: string,
+ *   updatedAt: string
+ * } | null>}
  */
 export async function getUploadByRoot(root) {
   const client = getDynamoClient()
@@ -138,5 +153,6 @@ export async function getUploadByRoot(root) {
     root: upload.root,
     shards: upload.shards ? Array.from(upload.shards) : [],
     insertedAt: upload.insertedAt,
+    updatedAt: upload.updatedAt,
   }
 }

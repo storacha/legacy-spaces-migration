@@ -11,7 +11,7 @@ import { getDynamoClient } from '../dynamo-client.js'
  * Get migration space for a customer
  * 
  * @param {string} customer - Customer account DID (did:mailto:...)
- * @returns {Promise<{migrationSpace: string, spaceName: string, indexCount: number, privateKey?: string} | null>}
+ * @returns {Promise<{migrationSpace: string, spaceName: string, indexCount: number, status: string, privateKey?: string} | null>}
  */
 export async function getMigrationSpace(customer) {
   const client = getDynamoClient()
@@ -26,7 +26,6 @@ export async function getMigrationSpace(customer) {
   })
   
   const response = await client.send(command)
-  
   if (!response.Item) {
     return null
   }
@@ -45,7 +44,7 @@ export async function getMigrationSpace(customer) {
  * 
  * @param {object} params
  * @param {string} params.customer - Customer account DID
- * @param {string} params.migrationSpace - Migration space DID
+ * @param {import('@storacha/access').OwnedSpace} params.migrationSpace - Migration space DID
  * @param {string} params.spaceName - Human-readable space name
  * @param {string} [params.privateKey] - Encrypted private key (optional)
  * @returns {Promise<void>}
@@ -57,7 +56,7 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
   
   const item = {
     customer,
-    migrationSpace,
+    migrationSpace: migrationSpace.did(),
     spaceName,
     created: now,
     lastUsed: now,
@@ -67,6 +66,7 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
   
   // Add encrypted private key if provided
   if (privateKey) {
+    // @ts-ignore
     item.privateKey = privateKey
   }
   
@@ -80,7 +80,7 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
   try {
     await client.send(command)
   } catch (error) {
-    // If space already exists (race condition), that's OK
+    // @ts-expect-error - If space already exists (race condition), that's OK
     if (error.name === 'ConditionalCheckFailedException') {
       console.log(`    ⊘ Migration space already exists for ${customer}`)
       return
@@ -96,19 +96,19 @@ export async function createMigrationSpace({ customer, migrationSpace, spaceName
  * @returns {Promise<void>}
  */
 export async function markSpaceAsProvisioned(customer) {
-  const client = createDynamoClient()
+  const client = getDynamoClient()
   
-  const command = new UpdateItemCommand({
+  const command = new UpdateCommand({
     TableName: config.tables.migrationSpaces,
-    Key: marshall({ customer }),
+    Key: { customer },
     UpdateExpression: 'SET #status = :status, lastUsed = :now',
     ExpressionAttributeNames: {
       '#status': 'status',
     },
-    ExpressionAttributeValues: marshall({
+    ExpressionAttributeValues: {
       ':status': 'provisioned',
       ':now': new Date().toISOString(),
-    }),
+    },
   })
   
   await client.send(command)

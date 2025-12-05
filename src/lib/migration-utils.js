@@ -6,9 +6,10 @@
  */
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
-import * as Space from '@storacha/access/space'
+import { Space } from '@storacha/access'
+import { OwnedSpace } from '@storacha/access/space'
 import * as Signer from '@ucanto/principal/ed25519'
-import { Verifier } from '@ucanto/principal'
+import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
 import { generateShardedIndex } from './index-worker.js'
 import { getShardSize } from './tables/shard-data-table.js'
@@ -20,14 +21,14 @@ import {
 import { provisionSpace } from './tables/consumer-table.js'
 import { encryptPrivateKey, decryptPrivateKey } from './crypto-utils.js'
 import { storeDelegations } from './tables/delegations-table.js'
-import { config } from '../config.js'
+import { getErrorMessage } from './error-utils.js'
 
 /**
  * Get or create migration space for a customer
  * Creates one migration space per customer (reused across script runs)
  * 
  * @param {string} customer - Customer account DID (did:mailto:...)
- * @returns {Promise<{space: import('@ucanto/principal/ed25519').Signer.EdSigner | null, isNew: boolean, spaceDID: string}>}
+ * @returns {Promise<{space: import('@storacha/access').OwnedSpace, isNew: boolean, spaceDID: string}>}
  */
 export async function getOrCreateMigrationSpaceForCustomer(customer) {
   const existing = await getMigrationSpace(customer)
@@ -37,34 +38,47 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
     try {
       console.log(`    ✓ Migration space exists: ${existing.migrationSpace}`)
       const decryptedKey = decryptPrivateKey(existing.privateKey)
-      const space = await Signer.parse(decryptedKey)
+      const signer = await Signer.parse(decryptedKey)
+      
+      // Wrap the signer in an OwnedSpace object to match the type returned by Space.generate()
+      const space = new OwnedSpace({
+        signer,
+        name: existing.spaceName,
+      })
       
       return { space, isNew: false, spaceDID: existing.migrationSpace }
     } catch (error) {
-      console.error(`    ✗ Failed to decrypt private key: ${error.message}`)
-      throw new Error(`Cannot reuse migration space: decryption failed`)
+      console.error(`    ✗ Failed to decrypt private key`, error)
+      throw new Error(`Cannot reuse migration space: decryption failed: ${getErrorMessage(error)}`)
     }
   }
   
   // Create new migration space
   const spaceName = `Migrated Indexes - ${customer}`
-  const space = await Space.generate({ name: spaceName })
+  const migrationSpace = await Space.generate({ name: spaceName })
   
   // Encrypt private key for storage
-  // Extract the secret key from the signer
-  const privateKeyBytes = space.signer.secret || space.signer.bytes
-  const encryptedKey = encryptPrivateKey(privateKeyBytes)
+  // Format signer as multibase string (same format that Signer.parse() expects)
+  const privateKeyString = Signer.format(migrationSpace.signer)
+  const encryptedKey = encryptPrivateKey(privateKeyString)
   
   // Store in tracking table with encrypted key
   await createMigrationSpace({
     customer,
-    migrationSpace: space.did(),
+    migrationSpace,
     spaceName,
     privateKey: encryptedKey,
   })
   
-  console.log(`    ✓ Created migration space: ${space.did()}`)
-  return { space, isNew: true, spaceDID: space.did() }
+  console.log(`    ✓ Created migration space: ${migrationSpace.did()}`)
+  
+  // Provision the migration space to the customer
+  await provisionMigrationSpace({
+    customer,
+    migrationSpace,
+  })
+  
+  return { space: migrationSpace, isNew: true, spaceDID: migrationSpace.did() }
 }
 
 /**
@@ -75,17 +89,19 @@ export async function getOrCreateMigrationSpaceForCustomer(customer) {
  * 
  * @param {object} params
  * @param {string} params.customer - Customer account DID
- * @param {string} params.migrationSpaceDID - Migration space DID
+ * @param {import('@storacha/access').OwnedSpace} params.migrationSpace - Migration space
  * @returns {Promise<void>}
  */
-export async function provisionMigrationSpace({ customer, migrationSpaceDID }) {
-  console.log(`    Provisioning space to customer account...`)
+export async function provisionMigrationSpace({ customer, migrationSpace }) {
+  console.log(`    Provisioning space ${migrationSpace.did()} to customer account ${customer}...`)
   
   // Add the space to the consumer table
-  await provisionSpace(customer, migrationSpaceDID)
+  await provisionSpace(customer, migrationSpace.did())
   
   // Mark as provisioned in our tracking table
   await markSpaceAsProvisioned(customer)
+
+  console.log(`    ✓ Provisioned space ${migrationSpace.did()} to customer account ${customer}`)
 }
 
 /**
@@ -96,29 +112,28 @@ export async function provisionMigrationSpace({ customer, migrationSpaceDID }) {
  * The delegation is stored in DynamoDB + S3 for the customer to retrieve.
  * 
  * @param {object} params
- * @param {import('@ucanto/principal/ed25519').Signer.EdSigner} params.migrationSpace - Migration space signer
- * @param {string} params.migrationSpaceDID - Migration space DID
+ * @param {import('@storacha/access').OwnedSpace} params.migrationSpace - Migration space signer
  * @param {string} params.customer - Customer account DID (did:mailto:...)
  * @param {import('@ucanto/interface').Link} [params.cause] - CID of invocation that triggered this delegation
  * @returns {Promise<void>}
  */
 export async function delegateMigrationSpaceToCustomer({
   migrationSpace,
-  migrationSpaceDID,
   customer,
   cause,
 }) {
   // Create account principal (Absentee since we don't have their private key)
-  const customerAccount = Verifier.from({ id: customer })
+  const customerAccount = Verifier.parse(customer)
+  console.log(`    Creating Migration Space delegation for customer account: ${customerAccount.did()}`)
   
   // Delegate full space access from migration space to customer account
   const delegation = await delegate({
-    issuer: migrationSpace,
+    issuer: migrationSpace.signer,
     audience: customerAccount,
     capabilities: [
       {
         can: 'space/*',
-        with: migrationSpaceDID,
+        with: migrationSpace.did(),
       }
     ],
     expiration: Infinity,
@@ -131,8 +146,9 @@ export async function delegateMigrationSpaceToCustomer({
     await storeDelegations([delegation], { cause })
     console.log(`    ✓ Delegation stored - customer can now access migration space`)
   } catch (error) {
-    console.error(`    ✗ Failed to store delegation: ${error.message}`)
-    throw new Error(`Failed to store delegation: ${error.message}`)
+    console.error('    ✗ Failed to store delegation')
+    console.error(error)
+    throw new Error(`Failed to store delegation: ${getErrorMessage(error)}`, {cause: error})
   }
 }
 
@@ -145,7 +161,7 @@ export async function delegateMigrationSpaceToCustomer({
  * @param {string[]} upload.shards - Shard CIDs
  * @returns {Promise<{
  *   indexBytes: Uint8Array,
- *   indexCID: import('multiformats').CID,
+ *   indexCID: import('@storacha/access').CARLink,
  *   indexDigest: import('multiformats').MultihashDigest,
  *   shards: Array<{cid: string, size: number}>
  * }>}
@@ -171,7 +187,7 @@ export async function generateDAGIndex(upload) {
   
   // Calculate index CID
   const indexDigest = await sha256.digest(indexBytes)
-  const indexCID = Link.create(0x0202, indexDigest) // CAR codec
+  const indexCID = Link.create(0x0202, indexDigest) // CAR codec (TODO: use raw code)
   
   console.log(`    ✓ Generated index: ${indexCID} (${indexBytes.length} bytes)`)
   
