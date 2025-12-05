@@ -10,8 +10,7 @@ import { base58btc } from 'multiformats/bases/base58'
 import { CID } from 'multiformats/cid'
 import * as Digest from 'multiformats/hashes/digest'
 import { getErrorMessage } from './error-utils.js'
-
-const WORKER_URL = 'https://index-worker-carpark-production.protocol-labs.workers.dev'
+import { config } from '../config.js'
 
 /**
  * Generates the index for a blob using the Index Worker
@@ -47,7 +46,7 @@ async function buildIndex(shardCID, size) {
     for (const ext of extensions) {
       const testKey = `${id}/${id}${ext}`
       try {
-        const url = `${WORKER_URL}/index/${testKey}?offset=0`
+        const url = `${config.services.indexWorkerURL}/index/${testKey}?offset=0`
         const res = await fetch(url, { method: 'HEAD' })
         if (res.ok) {
           blobKey = testKey
@@ -69,7 +68,7 @@ async function buildIndex(shardCID, size) {
     
     try {
       requestCount++
-      const url = `${WORKER_URL}/index/${blobKey}?offset=${offset}`
+      const url = `${config.services.indexWorkerURL}/index/${blobKey}?offset=${offset}`
       console.log(`Building index for ${blobKey}?offset=${offset}...`)
       const res = await fetch(url)
       if (!res.ok) {

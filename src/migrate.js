@@ -13,29 +13,30 @@
  *
  * Usage Examples:
  *
- *   # Full migration (all steps):
- *   node src/migrate.js --limit 10
+ *   # Sample migration (default: 10 uploads):
+ *   node src/migrate.js
+ *   node src/migrate.js --limit 100
  *
- *   # Test index generation only:
+ *   # Migrate all uploads for a space (unlimited by default):
+ *   node src/migrate.js --space did:key:z6Mk...
+ *   node src/migrate.js --space did:key:z6Mk... --limit 50
+ *
+ *   # Migrate all uploads for a customer (unlimited by default):
+ *   node src/migrate.js --customer did:mailto:...
+ *   node src/migrate.js --customer did:mailto:... --concurrency 5
+ *
+ *   # Migrate using customer list from file (unlimited by default):
+ *   node src/migrate.js --customers-file customers.json
+ *   node src/migrate.js --customers-file customers.json --limit 1000
+ *
+ *   # Test modes (limit to 10 for testing):
  *   node src/migrate.js --test-index --limit 10
- *
- *   # Test location claims only:
  *   node src/migrate.js --test-location-claims --limit 10
- *
- *   # Test gateway auth only:
  *   node src/migrate.js --test-gateway-auth --limit 10
  *
  *   # Verify migration only (no changes):
- *   node src/migrate.js --verify-only --limit 10
  *   node src/migrate.js --verify-only --space did:key:z6Mk...
  *   node src/migrate.js --verify-only --customer did:mailto:...
- *
- *   # Migrate specific space:
- *   node src/migrate.js --space did:key:z6Mk... --limit 50
- *
- *   # Migrate using customer list from file:
- *   node src/migrate.js --customers-file migration-state/instance-1-customers.json --limit 100
- *   node src/migrate.js --customers-file /path/to/customers.json --limit 100
  */
 import dotenv from 'dotenv'
 dotenv.config()
@@ -247,7 +248,7 @@ async function migrateUpload(upload, options = {}) {
 
     console.log(`\nSTEP 2: Generate and Register Index ${'─'.repeat(33)}`)
     if (status.needsIndexGeneration && shouldRunIndex) {
-      const result = await buildAndMigrateIndex({ upload })
+      const result = await buildAndMigrateIndex({ upload,  })
       shardsWithSizes = result.shards
       migrationSpace = result.migrationSpace
       indexCID = result.indexCID
@@ -280,6 +281,17 @@ async function migrateUpload(upload, options = {}) {
       console.log(`  Reason: Index already exists`)
     }
 
+    // Ensure migrationSpace is available for subsequent steps even if Step 2 was skipped
+    if (!migrationSpace && (status.needsLocationClaims || status.needsGatewayAuth)) {
+      const { getCustomerForSpace } = await import('./lib/tables/consumer-table.js')
+      const { getOrCreateMigrationSpaceForCustomer } = await import('./lib/migration-utils.js')
+      const customer = await getCustomerForSpace(upload.space)
+      if (customer) {
+        const res = await getOrCreateMigrationSpaceForCustomer(customer)
+        migrationSpace = res.space
+      }
+    }
+
     // Step 3: Republish location claims
     const shouldRunLocationClaims =
       !options.testMode || options.testMode === 'location-claims'
@@ -290,9 +302,14 @@ async function migrateUpload(upload, options = {}) {
         `  Shards to republish:   ${status.shardsNeedingLocationClaims.length}`
       )
 
-      // Use the original user's space for location claims (for egress billing)
+      // Use the MIGRATION SPACE for location claims so Freeway authorizes it!
+      // (Legacy spaces cannot be authorized easily)
+      if (!migrationSpace) {
+        throw new Error('Migration space not available for location claims')
+      }
+
       await republishLocationClaims({
-        space: SpaceDID.from(upload.space), // Original space, not migration space
+        space: SpaceDID.from(upload.space), 
         root: upload.root,
         shards: status.shardsNeedingLocationClaims,
         shardsWithSizes, // Reuse from step 2 if available
@@ -332,6 +349,10 @@ async function migrateUpload(upload, options = {}) {
 
     console.log(`\nSTEP 4: Create Gateway Authorization ${'─'.repeat(32)}`)
     if (status.needsGatewayAuth && shouldRunGatewayAuth) {
+      // Use Migration Space for gateway auth
+      if (!migrationSpace) {
+         throw new Error('Migration space not available for gateway auth')
+      }
       gatewayAuthResult = await createGatewayAuth({
         space: SpaceDID.from(upload.space),
       })
@@ -427,7 +448,9 @@ async function runMigrationMode(values) {
   console.log('='.repeat(70))
   console.log()
 
-  const limit = parseInt(values.limit || '10', 10)
+  // Default limit: 10 for sampling, unlimited for space/customer filtering
+  const hasFilter = values.space || values.customer || values['customers-file']
+  const limit = values.limit ? parseInt(values.limit, 10) : (hasFilter ? Infinity : 10)
   const concurrency = parseInt(values.concurrency || '1', 10)
 
   // Load customers from file if --customers-file is provided
@@ -438,7 +461,7 @@ async function runMigrationMode(values) {
 
   console.log('Configuration:')
   console.log(`  Mode: ${modeLabel}`)
-  console.log(`  Limit: ${limit} uploads`)
+  console.log(`  Limit: ${limit === Infinity ? 'unlimited' : `${limit} uploads`}`)
   console.log(`  Concurrency: ${concurrency}`)
   if (values['customers-file'])
     console.log(
@@ -493,10 +516,14 @@ async function runMigrationMode(values) {
 
     results.push(result)
   } else {
+    console.log('Debug: loading uploads')
+    console.log(values.space)
     // Import getCustomerForSpace to check upload ownership
     const { getCustomerForSpace } = await import(
       './lib/tables/consumer-table.js'
     )
+
+    //TODO find all customer spaces (consumer table), and then loop each customer space
 
     for await (const upload of sampleUploads({
       limit: limit * 10, // Sample more to account for filtering
