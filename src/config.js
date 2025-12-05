@@ -20,6 +20,7 @@ import * as Proof from '@storacha/client/proof'
  *  claimsBucket: string,
  *  indexingServiceURL: string,
  *  indexingServiceDID: string,
+ *  indexWorkerURL: string,
  *  contentClaimsURL: string,
  *  claimsServiceDID: string,
  *  uploadServiceURL: string,
@@ -43,6 +44,7 @@ const ENVIRONMENTS = {
     claimsBucket: 'prod-storage-claim-store-bucket',
     indexingServiceURL: 'https://indexer.storacha.network',
     indexingServiceDID: 'did:web:indexer.storacha.network',
+    indexWorkerURL: 'https://index-worker-carpark-production.protocol-labs.workers.dev',
     contentClaimsURL: 'https://claims.web3.storage',
     claimsServiceDID: 'did:web:claims.web3.storage',
     uploadServiceURL: 'https://up.storacha.network',
@@ -65,6 +67,7 @@ const ENVIRONMENTS = {
     claimsBucket: 'staging-storage-claim-store-bucket',
     indexingServiceURL: 'https://staging.indexer.storacha.network',
     indexingServiceDID: 'did:web:staging.indexer.storacha.network',
+    indexWorkerURL: 'https://index-worker-carpark-staging.protocol-labs.workers.dev',
     contentClaimsURL: 'https://staging.claims.web3.storage',
     claimsServiceDID: 'did:web:staging.claims.web3.storage',
     uploadServiceURL: 'https://staging.up.storacha.network',
@@ -155,6 +158,7 @@ export const config = {
     indexingServiceURL: process.env.INDEXING_SERVICE_URL || env.indexingServiceURL,
     indexingServiceDID:
       process.env.INDEXING_SERVICE_DID || env.indexingServiceDID,
+    indexWorkerURL: process.env.INDEX_WORKER_URL || env.indexWorkerURL,
     contentClaimsServiceURL:
       process.env.CONTENT_CLAIMS_SERVICE_URL || env.contentClaimsURL,
     claimsServiceDID: process.env.CLAIMS_SERVICE_DID || env.claimsServiceDID,

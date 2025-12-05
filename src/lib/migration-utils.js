@@ -187,7 +187,7 @@ export async function generateDAGIndex(upload) {
   
   // Calculate index CID
   const indexDigest = await sha256.digest(indexBytes)
-  const indexCID = Link.create(0x0202, indexDigest) // CAR codec
+  const indexCID = Link.create(0x0202, indexDigest) // CAR codec (TODO: use raw code)
   
   console.log(`    ✓ Generated index: ${indexCID} (${indexBytes.length} bytes)`)
   

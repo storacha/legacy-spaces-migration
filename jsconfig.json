@@ -24,7 +24,7 @@
   },
   "include": [
     "src/**/*"
-  ],
+, "scripts/debug-indexer.js"  ],
   "exclude": [
     "node_modules",
     "dist"
