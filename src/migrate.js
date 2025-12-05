@@ -53,42 +53,72 @@ import {
 import { verifyMigration } from './lib/migration-verify.js'
 import { getErrorMessage } from './lib/error-utils.js'
 import { SpaceDID } from '@storacha/capabilities/utils'
+import { getCustomerForSpace } from './lib/tables/consumer-table.js'
+import { getOrCreateMigrationSpaceForCustomer } from './lib/migration-utils.js'
+import { getUpload } from './lib/tables/upload-table.js'
 
 /**
- * Load customer list from a JSON file
- *
- * @param {string} filepath - Path to the customers JSON file
- * @returns {Promise<Array<string>>} - Array of customer DIDs
+ * Load customers from a JSON file
+ * File should contain an array of customer DIDs
+*
+ * @param {string} filePath - Path to customers file
+ * @returns {Promise<string[]>} - Array of customer DIDs
  */
-async function loadCustomersFromFile(filepath) {
-  try {
-    const data = await readFile(filepath, 'utf-8')
-    const json = JSON.parse(data)
+async function loadCustomersFromFile(filePath) {
+  const content = await readFile(filePath, 'utf-8')
+  const data = JSON.parse(content)
 
-    if (!json.customers || !Array.isArray(json.customers)) {
-      throw new Error(`Invalid file format: missing customers array`)
-    }
-
-    console.log(`Loaded ${json.customers.length} customers from ${filepath}`)
-    console.log(
-      `  Estimated uploads: ${
-        json.estimatedUploads?.toLocaleString() || 'unknown'
-      }`
-    )
-    console.log(
-      `  Estimated spaces: ${
-        json.estimatedSpaces?.toLocaleString() || 'unknown'
-      }`
-    )
-    console.log()
-
-    return json.customers
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      throw new Error(`Customer file not found: ${filepath}`)
-    }
-    throw error
+  if (!Array.isArray(data)) {
+    throw new Error('Customers file must contain an array of customer DIDs')
   }
+
+  return data
+}
+
+/**
+ * Resolve target spaces based on filter options
+ * 
+ * @param {object} options
+ * @param {string} [options.space] - Single space DID
+ * @param {string} [options.customer] - Single customer DID
+ * @param {string[]} [options.customers] - Array of customer DIDs from file
+ * @returns {Promise<string[] | undefined>} - Array of space DIDs to migrate, or undefined for no filter
+ */
+async function resolveTargetSpaces({ space, customer, customers }) {
+  const { getSpacesForCustomer } = await import('./lib/tables/consumer-table.js')
+  
+  // Single space mode
+  if (space) {
+    return [space]
+  }
+  
+  // Customer mode - build customer set from both --customer and --customers-file
+  const customerSet = new Set()
+  if (customer) {
+    customerSet.add(customer)
+  }
+  if (customers) {
+    customers.forEach(c => customerSet.add(c))
+  }
+  
+  if (customerSet.size > 0) {
+    console.log(`Loading spaces for ${customerSet.size} customer(s)...`)
+    const allSpaces = []
+    
+    for (const customerDID of customerSet) {
+      const customerSpaces = await getSpacesForCustomer(customerDID)
+      console.log(`  ${customerDID}: ${customerSpaces.length} spaces`)
+      allSpaces.push(...customerSpaces)
+    }
+    
+    console.log(`Total spaces to migrate: ${allSpaces.length}`)
+    console.log()
+    
+    return allSpaces
+  }
+  
+  // No filter - sample from all uploads
+  return undefined
 }
 
 /**
@@ -283,8 +313,6 @@ async function migrateUpload(upload, options = {}) {
 
     // Ensure migrationSpace is available for subsequent steps even if Step 2 was skipped
     if (!migrationSpace && (status.needsLocationClaims || status.needsGatewayAuth)) {
-      const { getCustomerForSpace } = await import('./lib/tables/consumer-table.js')
-      const { getOrCreateMigrationSpaceForCustomer } = await import('./lib/migration-utils.js')
       const customer = await getCustomerForSpace(upload.space)
       if (customer) {
         const res = await getOrCreateMigrationSpaceForCustomer(customer)
@@ -454,7 +482,8 @@ async function runMigrationMode(values) {
   const concurrency = parseInt(values.concurrency || '1', 10)
 
   // Load customers from file if --customers-file is provided
-  let customers = null
+  /** @type {string[] | undefined} */
+  let customers = undefined
   if (values['customers-file']) {
     customers = await loadCustomersFromFile(values['customers-file'])
   }
@@ -474,18 +503,6 @@ async function runMigrationMode(values) {
   const results = []
   let processed = 0
 
-  // Process uploads
-  // If --customers-file is provided, filter uploads by customers in the file
-  // Otherwise, sample from all uploads (existing behavior)
-  const customerSet = customers ? new Set(customers) : null
-
-  if (customerSet) {
-    console.log(
-      `Filtering uploads by ${customerSet.size} customers from file...`
-    )
-    console.log()
-  }
-
   // If --cid is provided, fetch and process that single upload
   if (values.cid) {
     console.log(`Fetching specific upload: ${values.cid}`)
@@ -497,7 +514,7 @@ async function runMigrationMode(values) {
     let upload
     if (values.space) {
       // If space is provided, use primary index for accurate data
-      const { getUpload } = await import('./lib/tables/upload-table.js')
+     
       upload = await getUpload(values.space, values.cid)
     } else {
       console.error(`❌ Space not provided`)
@@ -516,44 +533,49 @@ async function runMigrationMode(values) {
 
     results.push(result)
   } else {
-    console.log('Debug: loading uploads')
-    console.log(values.space)
-    // Import getCustomerForSpace to check upload ownership
-    const { getCustomerForSpace } = await import(
-      './lib/tables/consumer-table.js'
-    )
-
-    //TODO find all customer spaces (consumer table), and then loop each customer space
-
-    for await (const upload of sampleUploads({
-      limit: limit * 10, // Sample more to account for filtering
+    // Resolve target spaces based on filter options
+    const targetSpaces = await resolveTargetSpaces({
       space: values.space,
-    })) {
-      // If instance mode, check if upload belongs to one of our customers
-      if (customerSet) {
-        const customer = await getCustomerForSpace(upload.space)
-        if (!customer || !customerSet.has(customer)) {
-          continue // Skip uploads not belonging to our customers
+      customer: values.customer,
+      customers,
+    })
+
+    // Process uploads from target spaces
+    if (targetSpaces && targetSpaces.length > 0) {
+      // Iterate through each space to sample uploads based on the specified limit
+      for (const space of targetSpaces) {
+        console.log(`\nProcessing space: ${space}`)
+        
+        for await (const upload of sampleUploads({
+          limit: limit,
+          space: space,
+        })) {
+          processed++
+
+          const result = await migrateUpload(upload, {
+            testMode,
+            verifyOnly,
+            uploadNumber: processed,
+            totalUploads: limit,
+          })
+
+          results.push(result)
+
+          if (limit !== Infinity && processed >= limit) {
+            break
+          }
+
+          // Small delay between uploads to avoid overwhelming services
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        
+        if (limit !== Infinity && processed >= limit) {
+          break
         }
       }
-
-      processed++
-
-      const result = await migrateUpload(upload, {
-        testMode,
-        verifyOnly,
-        uploadNumber: processed,
-        totalUploads: limit,
-      })
-
-      results.push(result)
-
-      if (processed >= limit) {
-        break
-      }
-
-      // Small delay between uploads to avoid overwhelming services
-      await new Promise((resolve) => setTimeout(resolve, 100))
+    } else {
+      console.log("No target spaces found. Exiting.")
+      process.exit(0)
     }
   }
 
