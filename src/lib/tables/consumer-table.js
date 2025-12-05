@@ -71,6 +71,45 @@ async function createProvisionSubscriptionId(space) {
 }
 
 /**
+ * Get all spaces belonging to a customer
+ * 
+ * @param {string} customer - Customer DID (did:mailto:...)
+ * @returns {Promise<string[]>} - Array of space DIDs
+ */
+export async function getSpacesForCustomer(customer) {
+  const client = getDynamoClient()
+  /** @type {string[]} */
+  const spaces = []
+  /** @type {Record<string, any> | undefined} */
+  let lastEvaluatedKey
+  
+  while (true) {
+    const command = new QueryCommand({
+      TableName: config.tables.consumer,
+      IndexName: 'customer',
+      KeyConditionExpression: 'customer = :customer',
+      ExpressionAttributeValues: {
+        ':customer': customer,
+      },
+      ProjectionExpression: 'consumer',
+      ExclusiveStartKey: lastEvaluatedKey,
+    })
+    
+    const response = await client.send(command)
+    if (response.Items && response.Items.length > 0) {
+      spaces.push(...response.Items.map((/** @type {any} */ item) => item.consumer))
+    }
+    
+    lastEvaluatedKey = response.LastEvaluatedKey
+    if (!lastEvaluatedKey) {
+      break
+    }
+  }
+  
+  return spaces
+}
+
+/**
  * Provision a space to a customer (direct DB write for migration)
  * 
  * This bypasses the provider/add UCAN invocation and writes directly to DynamoDB.
