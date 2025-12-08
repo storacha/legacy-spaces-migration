@@ -721,13 +721,39 @@ async function runMigrationMode(values) {
     console.log(`  ⏭  Already migrated: ${alreadyMigrated}`)
   }
 
-  // Save results to file
-  if (values.output) {
-    const fs = await import('fs/promises')
-    await fs.writeFile(values.output, JSON.stringify(results, null, 2))
-    console.log()
-    console.log(`Results saved to: ${values.output}`)
+  // Save results to file with timestamp in logs folder
+  const fs = await import('fs/promises')
+  const path = await import('path')
+  
+  // Create logs directory if it doesn't exist
+  const logsDir = 'logs'
+  await fs.mkdir(logsDir, { recursive: true })
+  
+  // Generate filename with timestamp and identifiers
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5) // 2025-12-08T15-00-00
+  const mode = values['verify-only'] ? 'verify' : 'migrate'
+  
+  // Build descriptive filter part
+  let filterPart = 'sample'
+  if (values.customer) {
+    // Extract last part of customer DID for readability: did:mailto:storacha.network:travis -> travis
+    const customerShort = values.customer.replaceAll('did:mailto:', '') || 'customer'
+    filterPart = `customer-${customerShort}`
+  } else if (values.space) {
+    // Extract last 8 chars of space DID: did:key:z6Mk...opA -> z6Mk...opA
+    const spaceShort = values.space.replaceAll('did:key:', '') || 'space'
+    filterPart = `space-${spaceShort}`
+  } else if (values.cid) {
+    // Use first 8 chars of CID
+    filterPart = `cid-${values.cid.slice(0, 8)}`
   }
+  
+  const filename = `${timestamp}_${mode}_${filterPart}.json`
+  const outputPath = path.join(logsDir, filename)
+  
+  await fs.writeFile(outputPath, JSON.stringify(results, null, 2))
+  console.log()
+  console.log(`Results saved to: ${outputPath}`)
 
   console.log('='.repeat(70))
 }
@@ -786,12 +812,6 @@ async function main() {
         type: 'string',
         default: '1',
         description: 'Number of concurrent migrations',
-      },
-      output: {
-        type: 'string',
-        short: 'o',
-        default: 'migration-results.json',
-        description: 'Output file for results',
       },
     },
   })
