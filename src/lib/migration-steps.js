@@ -433,45 +433,28 @@ export async function republishLocationClaims({
       // Parse CID to get digest and codec
       const cid = CID.parse(shardCID)
       const digest = cid.multihash
-      const isCAR = cid.code === 0x0202 // car codec
 
-      // Determine protocol-specific values
-      let location
-      let providerAddrs
-
-      if (isCAR) {
-        // Store Protocol (CAR files)
-        // URL format: {carpark}/{cid}/{cid}.car
-        const locResult = URI.read(
-          `${config.storage.carparkPublicUrl}/${shardCID}/${shardCID}.car`
-        )
-        if (locResult.error) {
-          throw new Error(`Invalid location URI for CAR: ${locResult.error.message}`)
-        }
-        location = locResult.ok
-        providerAddrs = [
-          config.addresses.claimAddr.bytes,
-          // Store Protocol Address
-          config.addresses.storeProtocolBlobAddr.bytes,
-        ]
-      } else {
-        // Blob Protocol (Raw blobs)
-        // URL format: {carpark}/{digest}/{digest}.blob
-        const locResult = URI.read(
-          `${config.storage.carparkPublicUrl}/${base58btc.encode(
-            digest.bytes
-          )}/${base58btc.encode(digest.bytes)}.blob`
-        )
-        if (locResult.error) {
-          throw new Error(`Invalid location URI for Blob: ${locResult.error.message}`)
-        }
-        location = locResult.ok
-        providerAddrs = [
-          config.addresses.claimAddr.bytes,
-          // Blob Protocol Address
-          config.addresses.blobProtocolBlobAddr.bytes,
-        ]
+      // IMPORTANT: Legacy index shard content was stored as .blob files, not .car files
+      // Even though the shard CIDs have CAR codec (0x0202), the actual files
+      // in R2 are .blob format. We must point location claims to .blob files
+      // that actually exist, not non-existent .car files.
+      
+      // Blob Protocol (Raw blobs) - this is what actually exists in R2
+      // URL format: {carpark}/{digest}/{digest}.blob
+      const locResult = URI.read(
+        `${config.storage.carparkPublicUrl}/${base58btc.encode(
+          digest.bytes
+        )}/${base58btc.encode(digest.bytes)}.blob`
+      )
+      if (locResult.error) {
+        throw new Error(`Invalid location URI for Blob: ${locResult.error.message}`)
       }
+      const location = locResult.ok
+      const providerAddrs = [
+        config.addresses.claimAddr.bytes,
+        // Blob Protocol Address
+        config.addresses.blobProtocolBlobAddr.bytes,
+      ]
 
       console.log(`    Publishing location claim for ${shardCID}...`)
 

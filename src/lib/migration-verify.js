@@ -7,6 +7,7 @@ import { getErrorMessage } from './error-utils.js'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
+import { config } from '../config.js'
 
 /**
  * Verify that all migration steps completed successfully
@@ -16,6 +17,7 @@ import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
  * 2. Location claims exist for all shards
  * 3. Location claims include space information
  * 4. Gateway authorization status (from previous step result)
+ * 5. (Optional) Gateway retrieval test via HEAD request
  * 
  * Note: Gateway authorization verification relies on the result from the
  * createGatewayAuth step. Full verification would require querying the
@@ -27,17 +29,19 @@ import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
  * @param {string} params.upload.root - Root CID
  * @param {string[]} params.upload.shards - Shard CIDs
  * @param {{success: boolean, [key: string]: any}|null} [params.gatewayAuthResult] - Result from createGatewayAuth step
+ * @param {boolean} [params.testGatewayRetrieval] - If true, test actual gateway retrieval with HEAD request
  * @returns {Promise<{
  *   success: boolean,
  *   indexVerified: boolean,
  *   locationClaimsVerified: boolean,
  *   allShardsHaveSpace: boolean,
  *   gatewayAuthVerified: boolean,
+ *   gatewayRetrievalVerified: boolean | null,
  *   shardsWithoutSpace: string[],
  *   details: string
  * }>}
  */
-export async function verifyMigration({ upload, gatewayAuthResult }) {
+export async function verifyMigration({ upload, gatewayAuthResult, testGatewayRetrieval = false }) {
   
   try {
     // First, verify index claim exists by querying the root CID
@@ -88,8 +92,18 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
     const gatewayAuthVerified = gatewayAuthResult?.success ?? false
     const gatewayAuthSkipped = gatewayAuthResult === null
     
-    // Success requires all checks to pass, but gateway auth can be skipped
-    const success = indexVerified && locationClaimsVerified && allShardsHaveSpace && (gatewayAuthVerified || gatewayAuthSkipped)
+    // Optional: Test actual gateway retrieval
+    let gatewayRetrievalVerified = null
+    if (testGatewayRetrieval) {
+      console.log(`  Testing gateway retrieval...`)
+      const retrievalResult = await verifyGatewayRetrieval({ rootCID: upload.root })
+      gatewayRetrievalVerified = retrievalResult.success
+    }
+    
+    // Success requires all checks to pass, but gateway auth and retrieval can be skipped
+    const success = indexVerified && locationClaimsVerified && allShardsHaveSpace && 
+                    (gatewayAuthVerified || gatewayAuthSkipped) &&
+                    (gatewayRetrievalVerified === null || gatewayRetrievalVerified)
     
     let details = ''
     if (!success) {
@@ -98,6 +112,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       if (!locationClaimsVerified) issues.push('location claims missing')
       if (!allShardsHaveSpace) issues.push(`${shardsWithoutSpace.length} shards missing space info`)
       if (!gatewayAuthVerified && !gatewayAuthSkipped) issues.push('gateway authorization failed')
+      if (gatewayRetrievalVerified === false) issues.push('gateway retrieval failed')
       details = issues.join(', ')
     }
     
@@ -109,6 +124,9 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       console.log(`  Gateway authorization: ⏭ skipped`)
     } else {
       console.log(`  Gateway authorization: ${gatewayAuthVerified ? '✓ verified' : '✗ failed'}`)
+    }
+    if (testGatewayRetrieval) {
+      console.log(`  Gateway retrieval:     ${gatewayRetrievalVerified ? '✓ verified' : '✗ failed'}`)
     }
     
     if (success) {
@@ -127,6 +145,7 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       locationClaimsVerified,
       allShardsHaveSpace,
       gatewayAuthVerified,
+      gatewayRetrievalVerified,
       shardsWithoutSpace,
       details: details || 'All verification checks passed',
     }
@@ -138,8 +157,76 @@ export async function verifyMigration({ upload, gatewayAuthResult }) {
       locationClaimsVerified: false,
       allShardsHaveSpace: false,
       gatewayAuthVerified: false,
+      gatewayRetrievalVerified: null,
       shardsWithoutSpace: upload.shards,
       details: `Verification error: ${getErrorMessage(error)}`,
+    }
+  }
+}
+
+/**
+ * Verify gateway retrieval by making a HEAD request to the root CID
+ * 
+ * This performs a lightweight check without downloading the full content.
+ * Uses HEAD request to verify the gateway can resolve and serve the content.
+ * 
+ * @param {object} params
+ * @param {string} params.rootCID - Root CID to verify
+ * @param {string} [params.gatewayUrl] - Gateway URL (defaults to config.gateway.url)
+ * @returns {Promise<{
+ *   success: boolean,
+ *   statusCode: number | null,
+ *   contentLength: number | null,
+ *   error: string | null,
+ *   url: string
+ * }>}
+ */
+export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
+  const gateway = gatewayUrl || config.services.gatewayServiceURL
+  const url = `${gateway}/ipfs/${rootCID}`
+  
+  try {
+    console.log(`    Verifying gateway retrieval: ${url}`)
+    
+    // Use HEAD request to avoid downloading content
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(30000), // 30 second timeout
+    })
+    
+    const contentLength = response.headers.get('content-length')
+    const statusCode = response.status
+    
+    if (response.ok) {
+      console.log(`    ✓ Gateway retrieval successful (${statusCode})`)
+      if (contentLength) {
+        console.log(`    ✓ Content-Length: ${contentLength} bytes`)
+      }
+      return {
+        success: true,
+        statusCode,
+        contentLength: contentLength ? parseInt(contentLength, 10) : null,
+        error: null,
+        url,
+      }
+    } else {
+      console.log(`    ✗ Gateway retrieval failed (${statusCode})`)
+      return {
+        success: false,
+        statusCode,
+        contentLength: null,
+        error: `HTTP ${statusCode}`,
+        url,
+      }
+    }
+  } catch (error) {
+    console.log(`    ✗ Gateway retrieval error: ${getErrorMessage(error)}`)
+    return {
+      success: false,
+      statusCode: null,
+      contentLength: null,
+      error: getErrorMessage(error),
+      url,
     }
   }
 }

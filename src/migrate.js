@@ -34,9 +34,10 @@
  *   node src/migrate.js --test-location-claims --limit 10
  *   node src/migrate.js --test-gateway-auth --limit 10
  *
- *   # Verify migration only (no changes):
+ *   # Verify migration only (no changes, includes gateway retrieval test):
  *   node src/migrate.js --verify-only --space did:key:z6Mk...
  *   node src/migrate.js --verify-only --customer did:mailto:...
+ *   node src/migrate.js --verify-only --space did:key:z6Mk... --cid bafybeib...
  */
 import dotenv from 'dotenv'
 dotenv.config()
@@ -127,12 +128,12 @@ async function resolveTargetSpaces({ space, customer, customers }) {
  * @param {{space: string, root: string, shards: string[]}} upload - Upload from Upload Table
  * @param {object} options - Migration options
  * @param {string} [options.testMode] - Test mode: 'index' | 'location-claims' | 'gateway-auth' | null (null = full migration)
- * @param {boolean} [options.verifyOnly] - If true, only verify migration status without making changes
+ * @param {boolean} [options.verifyOnly] - If true, only verify migration status without making changes (also tests gateway retrieval)
  * @param {number} [options.uploadNumber] - Current upload number (for logging)
  * @param {number} [options.totalUploads] - Total uploads being processed (for logging)
  */
 async function migrateUpload(upload, options = {}) {
-  const { uploadNumber, totalUploads } = options
+  const { uploadNumber, totalUploads, verifyOnly = false } = options
 
   // Add spacing before each upload
   if (uploadNumber && uploadNumber > 1) {
@@ -194,13 +195,23 @@ async function migrateUpload(upload, options = {}) {
   }
 
   try {
+    // Test gateway retrieval BEFORE migration (baseline)
+    let retrievalBeforeMigration = null
+    if (options.verifyOnly) {
+      console.log(`\n>>> Verify-Only Mode: Testing gateway retrieval BEFORE checking migration...`)
+      const { verifyGatewayRetrieval } = await import('./lib/migration-verify.js')
+      retrievalBeforeMigration = await verifyGatewayRetrieval({ rootCID: upload.root })
+      console.log()
+    }
+
     // If verify-only mode, skip to verification
     if (options.verifyOnly) {
-      console.log(`\n>>> Verify-Only Mode: Checking migration status...`)
+      console.log(`>>> Checking migration status...`)
       // Pass null for gatewayAuthResult to indicate it should be skipped in verify-only mode
       const verificationResult = await verifyMigration({
         upload,
         gatewayAuthResult: null, // null = skip gateway auth check
+        testGatewayRetrieval: false, // Don't test again, we already did it above
       })
 
       return {
@@ -208,6 +219,7 @@ async function migrateUpload(upload, options = {}) {
         verifyOnly: true,
         upload: upload.root,
         space: upload.space,
+        retrievalBeforeMigration,
         verification: verificationResult,
         error: verificationResult.success
           ? undefined
@@ -414,11 +426,20 @@ async function migrateUpload(upload, options = {}) {
       gatewayAuthResult = { success: true }
     }
 
+    // Test gateway retrieval AFTER gateway authorization (if auth was created/exists)
+    let retrievalAfterAuth = null
+    if (gatewayAuthResult?.success) {
+      console.log(`\n>>> Testing gateway retrieval AFTER authorization...`)
+      const { verifyGatewayRetrieval } = await import('./lib/migration-verify.js')
+      retrievalAfterAuth = await verifyGatewayRetrieval({ rootCID: upload.root })
+    }
+
     // Step 5: Verify migration completed successfully
     console.log(`\nSTEP 5: Verify Migration ${'─'.repeat(43)}`)
     const verificationResult = await verifyMigration({
       upload,
       gatewayAuthResult,
+      testGatewayRetrieval: false, // Don't test again, we already did it above
     })
 
     return {
@@ -429,6 +450,7 @@ async function migrateUpload(upload, options = {}) {
       indexCID: indexCID?.toString(),
       shardsRepublished: status.shardsNeedingLocationClaims.length,
       status,
+      retrievalAfterAuth,
       verification: verificationResult,
       error: verificationResult.success
         ? undefined
@@ -532,6 +554,12 @@ async function runMigrationMode(values) {
       testMode,
       verifyOnly,
     })
+
+    // Track the space
+    processedSpaces.add(upload.space)
+    if (!result.success) {
+      spacesWithFailures.add(upload.space)
+    }
 
     results.push(result)
   } else {
@@ -673,8 +701,8 @@ async function runMigrationMode(values) {
   console.log(`\nUploads:`)
   console.log(`  Total processed:     ${results.length}`)
   if (verifyOnly) {
-    console.log(`  ✅ Verified (passed):  ${successful} (${successRate}%)`)
-    console.log(`  ❌ Verified (failed):  ${failed} (${failureRate}%)`)
+    console.log(`  ${successful > 0 ? '✅' : '✓'} Verified (passed):  ${successful} (${successRate}%)`)
+    console.log(`  ${failed > 0 ? '❌' : 'x'} Verified (failed):  ${failed} (${failureRate}%)`)
     
     // If all passed, add celebration
     if (failed === 0 && successful > 0) {
@@ -685,11 +713,11 @@ async function runMigrationMode(values) {
     }
   } else if (testMode) {
     console.log(`  Mode: Test (${testMode})`)
-    console.log(`  ✅ Successful:        ${successful} (${successRate}%)`)
-    console.log(`  ❌ Failed:            ${failed} (${failureRate}%)`)
+    console.log(`  ${successful > 0 ? '✅' : '✓'} Successful:        ${successful} (${successRate}%)`)
+    console.log(`  ${failed > 0 ? '❌' : 'x'} Failed:            ${failed} (${failureRate}%)`)
   } else {
-    console.log(`  ✅ Migrated:          ${successful} (${successRate}%)`)
-    console.log(`  ❌ Failed:            ${failed} (${failureRate}%)`)
+    console.log(`  ${successful > 0 ? '✅' : '✓'} Migrated:          ${successful} (${successRate}%)`)
+    console.log(`  ${failed > 0 ? '❌' : 'x'} Failed:            ${failed} (${failureRate}%)`)
     console.log(`  ⏭  Already migrated: ${alreadyMigrated}`)
   }
 
@@ -728,7 +756,7 @@ async function main() {
       'verify-only': {
         type: 'boolean',
         default: false,
-        description: 'Verify migration status without making changes',
+        description: 'Verify migration status without making changes (includes gateway retrieval test)',
       },
       cid: {
         type: 'string',
