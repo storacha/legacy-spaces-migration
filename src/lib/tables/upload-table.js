@@ -156,3 +156,43 @@ export async function getUploadByRoot(root) {
     updatedAt: upload.updatedAt,
   }
 }
+
+/**
+ * Count uploads for a specific space
+ * 
+ * @param {string} space - Space DID
+ * @returns {Promise<number>} Upload count (0 if space is empty)
+ */
+export async function countUploadsForSpace(space) {
+  const client = getDynamoClient()
+  
+  // First query to check if space has any uploads
+  const command = new QueryCommand({
+    TableName: config.tables.upload,
+    KeyConditionExpression: '#space = :space',
+    ExpressionAttributeNames: {
+      '#space': 'space',
+    },
+    ExpressionAttributeValues: {
+      ':space': space,
+    },
+    Select: 'COUNT',
+  })
+  
+  let count = 0
+  let lastEvaluatedKey
+  
+  do {
+    // If we have a last evaluated key, add it to the command
+    if (lastEvaluatedKey) {
+      command.input.ExclusiveStartKey = lastEvaluatedKey
+    }
+    
+    const response = await client.send(command)
+    count += response.Count || 0
+    lastEvaluatedKey = response.LastEvaluatedKey
+    
+  } while (lastEvaluatedKey)
+  
+  return count
+}

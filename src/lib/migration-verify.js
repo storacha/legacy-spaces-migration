@@ -189,33 +189,60 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
     console.log(`    Verifying gateway retrieval: ${url}`)
     
     // Use HEAD request to avoid downloading content
-    const response = await fetch(url, {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(30000), // 30 second timeout
-    })
-    
-    const contentLength = response.headers.get('content-length')
-    const statusCode = response.status
-    
-    if (response.ok) {
-      console.log(`    ✓ Gateway retrieval successful (${statusCode})`)
-      if (contentLength) {
-        console.log(`    ✓ Content-Length: ${contentLength} bytes`)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 3000) // 3 second timeout
+
+    try {
+      const response = await fetch(url, {
+        method: 'HEAD',
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      
+      const contentLength = response.headers.get('content-length')
+      const statusCode = response.status
+      
+      if (response.ok) {
+        console.log(`    ✓ Gateway retrieval successful (${statusCode})`)
+        if (contentLength) {
+          console.log(`    ✓ Content-Length: ${contentLength} bytes`)
+        }
+        return {
+          success: true,
+          statusCode,
+          contentLength: contentLength ? parseInt(contentLength, 10) : null,
+          error: null,
+          url,
+        }
+      } else if (statusCode === 408 || statusCode === 504 || statusCode === 502) {
+         // If timeout/gateway error, try fallback subdomain URL
+         throw new Error(`HTTP ${statusCode}`)
+      } else {
+        console.log(`    ✗ Gateway retrieval failed (${statusCode})`)
+        return {
+          success: false,
+          statusCode,
+          contentLength: null,
+          error: `HTTP ${statusCode}`,
+          url,
+        }
       }
-      return {
-        success: true,
-        statusCode,
-        contentLength: contentLength ? parseInt(contentLength, 10) : null,
-        error: null,
-        url,
+    } catch (error) {
+      clearTimeout(timeoutId)
+      
+      // Try fallback subdomain URL if primary failed
+      const subdomainUrl = getSubdomainGatewayUrl(gateway, rootCID)
+      if (subdomainUrl && subdomainUrl !== url) {
+        console.log(`    ⚠️  Primary gateway failed, trying subdomain fallback: ${subdomainUrl}`)
+        return verifyGatewayRetrieval({ rootCID, gatewayUrl: subdomainUrl })
       }
-    } else {
-      console.log(`    ✗ Gateway retrieval failed (${statusCode})`)
+      
+      console.log(`    ✗ Gateway retrieval error: ${getErrorMessage(error)}`)
       return {
         success: false,
-        statusCode,
+        statusCode: null,
         contentLength: null,
-        error: `HTTP ${statusCode}`,
+        error: getErrorMessage(error),
         url,
       }
     }
@@ -228,5 +255,25 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
       error: getErrorMessage(error),
       url,
     }
+  }
+}
+
+/**
+ * Get subdomain-style gateway URL for a CID
+ * @param {string} gatewayUrl 
+ * @param {string} cid 
+ * @returns {string|null}
+ */
+function getSubdomainGatewayUrl(gatewayUrl, cid) {
+  try {
+    const url = new URL(gatewayUrl)
+    if (url.hostname === 'staging.w3s.link') {
+      return `https://${cid}.ipfs-staging.w3s.link`
+    } else if (url.hostname === 'w3s.link') {
+      return `https://${cid}.ipfs.w3s.link`
+    }
+    return null
+  } catch (e) {
+    return null
   }
 }

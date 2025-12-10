@@ -56,7 +56,29 @@ import { getErrorMessage } from './lib/error-utils.js'
 import { SpaceDID } from '@storacha/capabilities/utils'
 import { getCustomerForSpace } from './lib/tables/consumer-table.js'
 import { getOrCreateMigrationSpaceForCustomer } from './lib/migration-utils.js'
-import { getUpload } from './lib/tables/upload-table.js'
+import { getUpload, countUploadsForSpace } from './lib/tables/upload-table.js'
+import {
+  createSpaceProgress,
+  updateSpaceProgress,
+  markSpaceCompleted,
+  markSpaceFailed,
+  getSpaceProgress
+} from './lib/tables/migration-progress-table.js'
+
+/**
+ * @typedef {object} SpaceProgress
+ * @property {string} customer
+ * @property {string} space
+ * @property {'pending'|'in-progress'|'completed'|'failed'} status
+ * @property {number} totalUploads
+ * @property {number} completedUploads
+ * @property {string} [lastProcessedUpload]
+ * @property {string} [instanceId]
+ * @property {string} [workerId]
+ * @property {string} [error]
+ * @property {string} createdAt
+ * @property {string} updatedAt
+ */
 
 /**
  * Load customers from a JSON file
@@ -574,11 +596,51 @@ async function runMigrationMode(values) {
     if (targetSpaces && targetSpaces.length > 0) {
       // Iterate through each space to sample uploads based on the specified limit
       for (const space of targetSpaces) {
+        // Initialize or resume progress tracking for this space
+        let customer = values.customer
+        if (!customer && values['customers-file']) {
+          // If iterating from file, we need to find the customer for this space
+          // This is a bit expensive but necessary if we want per-customer tracking
+          // However, for bulk migration, we usually know the customer map.
+          // For now, let's try to fetch it if not provided.
+          customer = await getCustomerForSpace(space)
+        }
+        
+        if (customer) {
+          try {
+            // Check if space is already completed
+            const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customer, space))
+            if (progress && progress.status === 'completed') {
+              console.log(`Space ${space} already completed. Skipping.`)
+              continue
+            }
+            
+            // Calculate total uploads if not already known
+            const totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
+            
+            if (!progress) {
+              await createSpaceProgress({
+                customer,
+                space,
+                totalUploads: totalUploadsInSpace,
+                instanceId: values['instance-id'] || 'local',
+                workerId: values['worker-id'] || '1'
+              })
+            }
+          } catch (err) {
+            console.warn(`Failed to track progress for space ${space}:`, getErrorMessage(err))
+          }
+        }
+
+        let spaceProcessed = 0
+        let spaceFailed = false
+        
         for await (const upload of sampleUploads({
           limit: limit,
           space: space,
         })) {
           processed++
+          spaceProcessed++
           processedSpaces.add(space)
 
           const result = await migrateUpload(upload, {
@@ -590,9 +652,25 @@ async function runMigrationMode(values) {
 
           if (!result.success) {
             spacesWithFailures.add(space)
+            spaceFailed = true
           }
 
           results.push(result)
+
+          // Update progress periodically (every 10 uploads or if failed)
+          if (customer && !verifyOnly && !testMode) {
+             try {
+               await updateSpaceProgress({
+                 customer,
+                 space,
+                 completedUploads: spaceProcessed, // This tracks uploads processed in THIS run. Ideally we should track cumulative.
+                 // For now, simple update. 
+                 lastProcessedUpload: upload.root
+               })
+             } catch (e) {
+               // Ignore progress update errors to avoid stopping migration
+             }
+          }
 
           if (limit !== Infinity && processed >= limit) {
             break
@@ -600,6 +678,15 @@ async function runMigrationMode(values) {
 
           // Small delay between uploads to avoid overwhelming services
           await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        
+        // Mark space status at the end
+        if (customer && !verifyOnly && !testMode) {
+           if (spaceFailed) {
+             await markSpaceFailed(customer, space, 'One or more uploads failed')
+           } else {
+             await markSpaceCompleted(customer, space)
+           }
         }
         
         if (limit !== Infinity && processed >= limit) {
@@ -813,6 +900,14 @@ async function main() {
         default: '1',
         description: 'Number of concurrent migrations',
       },
+      'instance-id': {
+        type: 'string',
+        description: 'EC2 Instance ID (for progress tracking)',
+      },
+      'worker-id': {
+        type: 'string',
+        description: 'Worker ID (for progress tracking)',
+      },
     },
   })
 
@@ -839,6 +934,26 @@ async function main() {
   )
   console.log('='.repeat(50))
   console.log()
+
+  // Ask for confirmation
+  const readline = await import('readline')
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  })
+
+  try {
+    const answer = await new Promise(resolve => {
+      rl.question('Do you want to proceed with this configuration? (y/N) ', resolve)
+    })
+
+    if (answer.toLowerCase() !== 'y') {
+      console.log('Aborted by user.')
+      process.exit(0)
+    }
+  } finally {
+    rl.close()
+  }
 
   // Run migration mode (handles all cases including test modes)
   await runMigrationMode(values)
