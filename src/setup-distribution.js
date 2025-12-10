@@ -26,9 +26,9 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import { parseArgs } from 'node:util'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
+import { ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { validateConfig, config } from './config.js'
+import { getDynamoClient } from './lib/dynamo-client.js'
 import fs from 'fs/promises'
 import path from 'path'
 
@@ -39,31 +39,33 @@ const DISTRIBUTION_DIR = 'migration-state'
  * 
  * @param {number} segment - Segment number (0-based)
  * @param {number} totalSegments - Total number of segments
- * @returns {Promise<Map>} Map of customer -> Set of spaces
+ * @returns {Promise<{segment: number, scanned: number, customerSpacesMap: Map<string, Set<string>>}>} Map of customer -> Set of spaces
  */
 async function scanConsumerSegment(segment, totalSegments) {
-  const baseClient = new DynamoDBClient({
-    region: config.aws.region,
-  })
-  const client = DynamoDBDocumentClient.from(baseClient)
+  const client = getDynamoClient()
+  /** @type {Map<string, Set<string>>} */
   const customerSpacesMap = new Map() // customer -> Set(spaces)
   
   let scanned = 0
+  /** @type {Record<string, any> | undefined} */
   let lastEvaluatedKey
   const startTime = Date.now()
   
   console.log(`  [Segment ${segment}] Scanning consumer table...`)
   
   while (true) {
-    const command = new ScanCommand({
+    /** @type {import('@aws-sdk/lib-dynamodb').ScanCommandInput} */
+    const commandInput = {
       TableName: config.tables.consumer,
       ProjectionExpression: 'consumer, customer',
       Limit: 1000,
       ExclusiveStartKey: lastEvaluatedKey,
       Segment: segment,
       TotalSegments: totalSegments,
-    })
+    }
+    const command = new ScanCommand(commandInput)
     
+    /** @type {import('@aws-sdk/lib-dynamodb').ScanCommandOutput} */
     const response = await client.send(command)
     
     if (!response.Items || response.Items.length === 0) {
@@ -75,6 +77,7 @@ async function scanConsumerSegment(segment, totalSegments) {
         if (!customerSpacesMap.has(record.customer)) {
           customerSpacesMap.set(record.customer, new Set())
         }
+        // @ts-ignore - We know customer exists in map
         customerSpacesMap.get(record.customer).add(record.consumer)
       }
     }
@@ -96,7 +99,7 @@ async function scanConsumerSegment(segment, totalSegments) {
 /**
  * Count uploads for a specific space with retry logic
  * 
- * @param {DynamoDBClient} client - Reusable DynamoDB client
+ * @param {import('@aws-sdk/lib-dynamodb').DynamoDBDocumentClient} client - Reusable DynamoDB client
  * @param {string} space - Space DID
  * @returns {Promise<number>} Upload count (0 if space is empty)
  */
@@ -104,13 +107,21 @@ async function countUploadsForSpace(client, space) {
   const maxRetries = 5
   const baseDelay = 1000 // 1 second
   
+  /**
+   * Execute command with retry logic
+   * @param {QueryCommand} command 
+   * @param {number} retryCount 
+   * @returns {Promise<import('@aws-sdk/lib-dynamodb').QueryCommandOutput>}
+   */
   async function executeWithRetry(command, retryCount = 0) {
     try {
+      // @ts-ignore - TS has trouble with command types here
       return await client.send(command)
     } catch (error) {
       // Retry on timeout or throttling errors
-      if ((error.code === 'ETIMEDOUT' || error.name === 'TimeoutError' || 
-           error.name === 'ProvisionedThroughputExceededException') && 
+      const err = /** @type {any} */ (error)
+      if ((err.code === 'ETIMEDOUT' || err.name === 'TimeoutError' || 
+           err.name === 'ProvisionedThroughputExceededException') && 
           retryCount < maxRetries) {
         const delay = baseDelay * Math.pow(2, retryCount) // Exponential backoff
         console.log(`    [Retry ${retryCount + 1}/${maxRetries}] Connection error, retrying in ${delay}ms...`)
@@ -238,16 +249,14 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
   let processedCustomers = 0
   let totalSpacesProcessed = 0
   
-  // Create a shared DynamoDB Document Client for reuse
-  const baseClient = new DynamoDBClient({
-    region: config.aws.region,
-  })
-  const client = DynamoDBDocumentClient.from(baseClient)
+  // Get the singleton DynamoDB Document Client
+  const client = getDynamoClient()
   
   const countStartTime = Date.now()
   
   // Checkpoint file for resume capability
   const checkpointFile = path.join(DISTRIBUTION_DIR, 'counting-checkpoint.json')
+  /** @type {{processedCustomers: number, customers: Array<any>}} */
   let checkpoint = { processedCustomers: 0, customers: [] }
   
   // Try to load existing checkpoint
@@ -309,6 +318,7 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
     
     customers.push(...batchResults)
     processedCustomers += batch.length
+    // @ts-ignore - batch is array of entries [customer, spaces]
     totalSpacesProcessed += batch.reduce((sum, [, spaces]) => sum + spaces.size, 0)
     
     const pct = ((processedCustomers / totalCustomers) * 100).toFixed(1)
@@ -354,6 +364,7 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
 
 /**
  * Analyze customer distribution statistics
+ * @param {Array<{customer: string, uploadCount: number, spaceCount: number, emptySpaceCount?: number, totalSpaceCount?: number}>} customers
  */
 function analyzeDistribution(customers) {
   console.log('Customer Distribution Analysis')
@@ -366,7 +377,7 @@ function analyzeDistribution(customers) {
   const totalAllSpaces = customers.reduce((sum, c) => sum + (c.totalSpaceCount || c.spaceCount), 0)
   const avgUploadsPerCustomer = totalUploads / totalCustomers
   const avgSpacesPerCustomer = totalSpaces / totalCustomers
-  const emptySpacePct = ((totalEmptySpaces / totalAllSpaces) * 100).toFixed(1)
+  const emptySpacePct = totalAllSpaces > 0 ? ((totalEmptySpaces / totalAllSpaces) * 100).toFixed(1) : '0.0'
   
   console.log(`Total customers: ${totalCustomers.toLocaleString()}`)
   console.log(`Total uploads: ${totalUploads.toLocaleString()}`)
@@ -381,7 +392,7 @@ function analyzeDistribution(customers) {
   console.log('Top 100 Customers by Upload Count:')
   console.log('-'.repeat(70))
   customers.slice(0, 100).forEach((c, i) => {
-    const pct = ((c.uploadCount / totalUploads) * 100).toFixed(2)
+    const pct = totalUploads > 0 ? ((c.uploadCount / totalUploads) * 100).toFixed(2) : '0.00'
     console.log(`  ${String(i + 1).padStart(3)}. ${c.customer.padEnd(50)} | ${String(c.uploadCount.toLocaleString()).padStart(12)} uploads (${String(pct).padStart(5)}%) | ${String(c.spaceCount).padStart(6)} spaces`)
   })
   console.log()
@@ -399,7 +410,7 @@ function analyzeDistribution(customers) {
   
   for (const bucket of buckets) {
     const count = customers.filter(c => c.uploadCount >= bucket.min && c.uploadCount <= bucket.max).length
-    const pct = ((count / totalCustomers) * 100).toFixed(1)
+    const pct = totalCustomers > 0 ? ((count / totalCustomers) * 100).toFixed(1) : '0.0'
     console.log(`  ${bucket.label.padEnd(10)}: ${count.toLocaleString().padStart(8)} customers (${pct}%)`)
   }
   console.log()
@@ -410,12 +421,13 @@ function analyzeDistribution(customers) {
 /**
  * Distribute customers across instances using greedy load balancing
  * 
- * @param {Array} customers - Array of customer objects
+ * @param {Array<{customer: string, uploadCount: number, spaceCount: number, emptySpaceCount?: number, totalSpaceCount?: number}>} customers - Array of customer objects
  * @param {number} numInstances - Number of instances
- * @returns {Array<{instanceId: number, customers: Array, totalUploads: number, totalSpaces: number}>}
+ * @returns {Array<{instanceId: number, customers: Array<string>, totalUploads: number, totalSpaces: number, totalEmptySpaces: number, totalAllSpaces: number}>}
  */
 function distributeCustomers(customers, numInstances) {
   // Initialize instances
+  /** @type {Array<{instanceId: number, customers: Array<string>, totalUploads: number, totalSpaces: number, totalEmptySpaces: number, totalAllSpaces: number}>} */
   const instances = Array(numInstances).fill(null).map((_, i) => ({
     instanceId: i + 1,
     customers: [],
@@ -443,6 +455,9 @@ function distributeCustomers(customers, numInstances) {
 
 /**
  * Print distribution summary
+ * @param {Array<{instanceId: number, customers: Array<string>, totalUploads: number, totalSpaces: number, totalEmptySpaces: number, totalAllSpaces: number}>} distribution 
+ * @param {number} totalUploads 
+ * @param {number} workersPerInstance 
  */
 function printDistributionSummary(distribution, totalUploads, workersPerInstance = 10) {
   console.log('Instance Distribution')
@@ -451,8 +466,8 @@ function printDistributionSummary(distribution, totalUploads, workersPerInstance
   const UPLOADS_PER_MIN_PER_WORKER = 27
   
   for (const instance of distribution) {
-    const pct = ((instance.totalUploads / totalUploads) * 100).toFixed(1)
-    const avgUploadsPerCustomer = Math.round(instance.totalUploads / instance.customers.length)
+    const pct = totalUploads > 0 ? ((instance.totalUploads / totalUploads) * 100).toFixed(1) : '0.0'
+    const avgUploadsPerCustomer = instance.customers.length > 0 ? Math.round(instance.totalUploads / instance.customers.length) : 0
     const emptyPct = instance.totalAllSpaces > 0 
       ? ((instance.totalEmptySpaces / instance.totalAllSpaces) * 100).toFixed(1)
       : '0.0'
@@ -478,8 +493,8 @@ function printDistributionSummary(distribution, totalUploads, workersPerInstance
   const uploadsPerInstance = distribution.map(i => i.totalUploads)
   const minUploads = Math.min(...uploadsPerInstance)
   const maxUploads = Math.max(...uploadsPerInstance)
-  const avgUploads = uploadsPerInstance.reduce((a, b) => a + b, 0) / uploadsPerInstance.length
-  const variance = ((maxUploads - minUploads) / avgUploads * 100).toFixed(1)
+  const avgUploads = uploadsPerInstance.length > 0 ? uploadsPerInstance.reduce((a, b) => a + b, 0) / uploadsPerInstance.length : 0
+  const variance = avgUploads > 0 ? ((maxUploads - minUploads) / avgUploads * 100).toFixed(1) : '0.0'
   
   console.log('Load Balance:')
   console.log(`  Min uploads/instance: ${minUploads.toLocaleString()}`)
@@ -491,6 +506,8 @@ function printDistributionSummary(distribution, totalUploads, workersPerInstance
 
 /**
  * Estimate migration time
+ * @param {Array<{instanceId: number, customers: Array<string>, totalUploads: number}>} distribution 
+ * @param {number} workersPerInstance 
  */
 function estimateMigrationTime(distribution, workersPerInstance = 10) {
   console.log('Migration Time Estimate')
@@ -564,6 +581,7 @@ function estimateMigrationTime(distribution, workersPerInstance = 10) {
 
 /**
  * Save distribution to files
+ * @param {Array<{instanceId: number, customers: Array<string>, totalUploads: number, totalSpaces: number, totalEmptySpaces: number, totalAllSpaces: number}>} distribution 
  */
 async function saveDistribution(distribution) {
   // Ensure directory exists
@@ -573,11 +591,12 @@ async function saveDistribution(distribution) {
   console.log('='.repeat(70))
   
   for (const instance of distribution) {
-    const filename = `instance-${instance.instanceId}-customers.json`
+    const filename = `instance-${instance.instanceId}-customers-${config.environment}.json`
     const filepath = path.join(DISTRIBUTION_DIR, filename)
     
     const data = {
       instanceId: instance.instanceId,
+      environment: config.environment,
       totalCustomers: instance.customers.length,
       estimatedUploads: instance.totalUploads,
       estimatedSpaces: instance.totalSpaces,
@@ -596,6 +615,7 @@ async function saveDistribution(distribution) {
 
 /**
  * Print usage instructions
+ * @param {number} numInstances 
  */
 function printUsageInstructions(numInstances) {
   console.log('Next Steps')
@@ -661,7 +681,30 @@ async function main() {
   console.log()
   console.log('Legacy Content Migration - Setup Distribution')
   console.log('='.repeat(70))
-  console.log()
+  console.log(`Environment: ${config.environment}`)
+  console.log(`Region: ${config.aws.region}`)
+  console.log(`Consumer Table: ${config.tables.consumer}`)
+  console.log(`Upload Table: ${config.tables.upload}`)
+
+  // Ask for confirmation
+  const readline = await import('readline')
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  })
+
+  try {
+    const answer = await new Promise(resolve => {
+      rl.question('Do you want to proceed with this configuration? (y/N) ', resolve)
+    })
+
+    if (answer.toLowerCase() !== 'y') {
+      console.log('Aborted by user.')
+      process.exit(0)
+    }
+  } finally {
+    rl.close()
+  }
   
   // Discover customers
   const customers = await discoverCustomers({ minUploads, parallelSegments })

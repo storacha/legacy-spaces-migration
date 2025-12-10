@@ -92,7 +92,7 @@ const ENVIRONMENTS = {
  * Get current environment from ENV var or default to production
  */
 const getEnvironment = () => {
-  const env = process.env.STORACHA_ENV || 'production'
+  const env = process.env.STORACHA_ENV || 'staging'
   if (!ENVIRONMENTS[env]) {
     throw new Error(
       `Invalid STORACHA_ENV: ${env}. Must be 'production' or 'staging'`
@@ -104,7 +104,7 @@ const getEnvironment = () => {
 const env = getEnvironment()
 
 export const config = {
-  environment: process.env.STORACHA_ENV || 'production',
+  environment: process.env.STORACHA_ENV || 'staging',
 
   aws: {
     region: process.env.AWS_REGION || env.region,
