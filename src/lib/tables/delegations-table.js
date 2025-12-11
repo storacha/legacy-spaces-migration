@@ -96,12 +96,11 @@ export async function storeDelegations(delegations, options = {}) {
 
   const dynamoClient = getDynamoClient()
   
-  // Use R2 if configured, otherwise S3
-  const useR2 = !!config.storage.r2DelegationBucket
-  const client = useR2 ? getR2Client() : getS3Client()
-  const bucketName = useR2 ? config.storage.r2DelegationBucket : config.storage.delegationBucket
+  // Always use R2 for delegation storage
+  const client = getR2Client()
+  const bucketName = config.storage.r2DelegationBucket
 
-  // Store delegation CAR bytes in S3/R2 (matching w3infra format)
+  // Store delegation CAR bytes in R2 (matching w3infra format)
   // Each delegation is encoded as a CAR file containing just that delegation
   await Promise.all(delegations.map(async (delegation) => {
     // Encode single delegation as CAR bytes
@@ -115,7 +114,7 @@ export async function storeDelegations(delegations, options = {}) {
     })
     
     await client.send(command)
-    console.log(`      ✓ Stored delegation CAR to ${useR2 ? 'R2' : 'S3'}: ${createDelegationsBucketKey(delegation.cid)}`)
+    console.log(`      ✓ Stored delegation CAR to R2: ${createDelegationsBucketKey(delegation.cid)}`)
   }))
 
   // Index delegations in DynamoDB
