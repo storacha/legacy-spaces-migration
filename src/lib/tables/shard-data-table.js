@@ -12,18 +12,13 @@ import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
 
 /**
- * Query allocations table to get shard size
- * Falls back to store table if not found
- * 
- * Query order:
- * 1. allocations (current, still being written to)
- * 2. store (legacy)
+ * Get shard info (size and protocol)
  * 
  * @param {string} space - Space DID
  * @param {string} shardCID - Shard CID (CAR CID)
- * @returns {Promise<number>} - Blob size in bytes
+ * @returns {Promise<{size: number, protocol: 'blob'|'store'}>}
  */
-export async function getShardSize(space, shardCID) {
+export async function getShardInfo(space, shardCID) {
   const client = getDynamoClient()
   
   // Parse the CAR CID to get its multihash
@@ -49,7 +44,10 @@ export async function getShardSize(space, shardCID) {
   
   if (allocationsResponse.Items && allocationsResponse.Items.length > 0) {
     const blob = allocationsResponse.Items[0]
-    return parseInt(blob.size, 10)
+    return {
+      size: parseInt(blob.size, 10),
+      protocol: 'blob'
+    }
   }
   
   // Fall back to store table (legacy table)
@@ -69,8 +67,28 @@ export async function getShardSize(space, shardCID) {
   const storeResponse = await client.send(storeCommand)
   if (storeResponse.Items && storeResponse.Items.length > 0) {
     const blob = storeResponse.Items[0]
-    return parseInt(blob.size, 10)
+    return {
+      size: parseInt(blob.size, 10),
+      protocol: 'store'
+    }
   }
   
   throw new Error(`Shard ${shardCID} not found in allocations or store table for space ${space}`)
+}
+
+/**
+ * Query allocations table to get shard size
+ * Falls back to store table if not found
+ * 
+ * Query order:
+ * 1. allocations (current, still being written to)
+ * 2. store (legacy)
+ * 
+ * @param {string} space - Space DID
+ * @param {string} shardCID - Shard CID (CAR CID)
+ * @returns {Promise<number>} - Blob size in bytes
+ */
+export async function getShardSize(space, shardCID) {
+  const info = await getShardInfo(space, shardCID)
+  return info.size
 }

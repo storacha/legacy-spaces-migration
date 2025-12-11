@@ -183,7 +183,7 @@ export async function verifyMigration({ upload, gatewayAuthResult, testGatewayRe
  */
 export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
   const gateway = gatewayUrl || config.services.gatewayServiceURL
-  const url = `${gateway}/ipfs/${rootCID}`
+  const url = getSubdomainGatewayUrl(gateway, rootCID)
   
   try {
     console.log(`    Verifying gateway retrieval: ${url}`)
@@ -214,9 +214,6 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
           error: null,
           url,
         }
-      } else if (statusCode === 408 || statusCode === 504 || statusCode === 502) {
-         // If timeout/gateway error, try fallback subdomain URL
-         throw new Error(`HTTP ${statusCode}`)
       } else {
         console.log(`    ✗ Gateway retrieval failed (${statusCode})`)
         return {
@@ -229,13 +226,6 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
       }
     } catch (error) {
       clearTimeout(timeoutId)
-      
-      // Try fallback subdomain URL if primary failed
-      const subdomainUrl = getSubdomainGatewayUrl(gateway, rootCID)
-      if (subdomainUrl && subdomainUrl !== url) {
-        console.log(`    ⚠️  Primary gateway failed, trying subdomain fallback: ${subdomainUrl}`)
-        return verifyGatewayRetrieval({ rootCID, gatewayUrl: subdomainUrl })
-      }
       
       console.log(`    ✗ Gateway retrieval error: ${getErrorMessage(error)}`)
       return {
@@ -262,18 +252,13 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
  * Get subdomain-style gateway URL for a CID
  * @param {string} gatewayUrl 
  * @param {string} cid 
- * @returns {string|null}
+ * @returns {string}
  */
 function getSubdomainGatewayUrl(gatewayUrl, cid) {
-  try {
     const url = new URL(gatewayUrl)
     if (url.hostname === 'staging.w3s.link') {
       return `https://${cid}.ipfs-staging.w3s.link`
-    } else if (url.hostname === 'w3s.link') {
+    } else {
       return `https://${cid}.ipfs.w3s.link`
     }
-    return null
-  } catch (e) {
-    return null
-  }
 }
