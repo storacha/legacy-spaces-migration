@@ -32,6 +32,9 @@ importers:
       '@ipld/dag-json':
         specifier: ^10.2.5
         version: 10.2.5
+      '@ipld/dag-ucan':
+        specifier: ^3.4.5
+        version: 3.4.5
       '@libp2p/interface':
         specifier: ^1.7.0
         version: 1.7.0

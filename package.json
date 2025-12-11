@@ -20,6 +20,7 @@
     "@ipld/car": "^5.4.2",
     "@ipld/dag-cbor": "^9.2.5",
     "@ipld/dag-json": "^10.2.5",
+    "@ipld/dag-ucan": "^3.4.5",
     "@libp2p/interface": "^1.7.0",
     "@libp2p/peer-id": "^4.1.0",
     "@multiformats/multiaddr": "^13.0.1",
