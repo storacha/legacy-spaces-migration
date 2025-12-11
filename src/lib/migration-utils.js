@@ -12,7 +12,7 @@ import * as Signer from '@ucanto/principal/ed25519'
 import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
 import { generateShardedIndex } from './index-worker.js'
-import { getShardSize } from './tables/shard-data-table.js'
+import { getShardSize, getShardInfo } from './tables/shard-data-table.js'
 import {
   getMigrationSpace,
   createMigrationSpace,
@@ -173,15 +173,17 @@ export async function generateDAGIndex(upload) {
   console.log(`  Querying blob registry for shard sizes...`)
   const shards = []
   for (const shardCIDString of upload.shards) {
-    const size = await getShardSize(upload.space, shardCIDString)
+    const info = await getShardInfo(upload.space, shardCIDString)
     shards.push({
       cid: shardCIDString,
-      size,
+      size: info.size,
+      protocol: info.protocol,
     })
-    console.log(`    ✓ ${shardCIDString}: ${size} bytes`)
+    console.log(`    ✓ ${shardCIDString}: ${info.size} bytes (${info.protocol})`)
   }
   
   // Generate index using worker
+  // Worker only needs cid and size
   const result = await generateShardedIndex(upload.root, shards)
   const indexBytes = result.indexBytes
   

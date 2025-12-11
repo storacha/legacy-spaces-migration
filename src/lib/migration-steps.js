@@ -21,15 +21,13 @@ import {
   Claim as ClaimCapabilities,
   UCAN,
 } from '@storacha/capabilities'
-import * as IndexCapabilities from '@storacha/capabilities/space/index'
-import * as ContentCapabilities from '@storacha/capabilities/space/content'
 import { CID } from 'multiformats/cid'
 import { base58btc } from 'multiformats/bases/base58'
 import * as Digest from 'multiformats/hashes/digest'
 import { queryIndexingService } from './indexing-service.js'
 import { getCustomerForSpace } from './tables/consumer-table.js'
 import { incrementIndexCount } from './tables/migration-spaces-table.js'
-import { getShardSize } from './tables/shard-data-table.js'
+import { getShardInfo } from './tables/shard-data-table.js'
 import { findDelegationByIssuer } from './tables/delegations-table.js'
 import {
   getOrCreateMigrationSpaceForCustomer,
@@ -385,7 +383,7 @@ export async function registerIndex({ upload, indexCID }) {
  * @param {string[]} params.shards - Shard CIDs (CAR files) to republish
  * @param {string} params.root - Root CID (index CAR)
  * @param {import('@storacha/access').OwnedSpace} [params.migrationSpace] - Migration space DID
- * @param {Array<{cid: string, size: number}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
+ * @param {Array<{cid: string, size: number, protocol?: 'blob'|'store'}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
  * @returns {Promise<void>}
  */
 export async function republishLocationClaims({
@@ -419,44 +417,54 @@ export async function republishLocationClaims({
   })
 
   // Create lookup map if shardsWithSizes provided (optimization to avoid re-querying DynamoDB)
-  const shardSizeMap = shardsWithSizes
-    ? new Map(shardsWithSizes.map((s) => [s.cid, s.size]))
+  const shardInfoMap = shardsWithSizes
+    ? new Map(shardsWithSizes.map((s) => [s.cid, s]))
     : null
 
   // Republish location claim for each shard
   for (const shardCID of shards) {
     try {
-      // Get shard size - use cached value if available, otherwise query DynamoDB
-      const size =
-        shardSizeMap?.get(shardCID) ?? (await getShardSize(space, shardCID))
+      // Get shard info - use cached value if available, otherwise query DynamoDB
+      let info = shardInfoMap?.get(shardCID)
+      if (!info) {
+          const fetched = await getShardInfo(space, shardCID)
+          info = { cid: shardCID, ...fetched }
+      }
+      const { size, protocol = 'blob' } = info
 
       // Parse CID to get digest and codec
       const cid = CID.parse(shardCID)
       const digest = cid.multihash
 
-      // IMPORTANT: Legacy index shard content was stored as .blob files, not .car files
-      // Even though the shard CIDs have CAR codec (0x0202), the actual files
-      // in R2 are .blob format. We must point location claims to .blob files
-      // that actually exist, not non-existent .car files.
-      
-      // Blob Protocol (Raw blobs) - this is what actually exists in R2
-      // URL format: {carpark}/{digest}/{digest}.blob
-      const locResult = URI.read(
-        `${config.storage.carparkPublicUrl}/${base58btc.encode(
+      // Construct location URI based on protocol
+      let locationURI
+      let providerAddrBytes
+
+      if (protocol === 'store') {
+        // Store Protocol (CAR files)
+        // URL format: {carpark}/{cid}/{cid}.car
+        locationURI = `${config.storage.carparkPublicUrl}/${shardCID}/${shardCID}.car`
+        providerAddrBytes = config.addresses.storeProtocolBlobAddr.bytes
+      } else {
+        // Blob Protocol (Raw blobs)
+        // URL format: {carpark}/{digest}/{digest}.blob
+        locationURI = `${config.storage.carparkPublicUrl}/${base58btc.encode(
           digest.bytes
         )}/${base58btc.encode(digest.bytes)}.blob`
-      )
+        providerAddrBytes = config.addresses.blobProtocolBlobAddr.bytes
+      }
+
+      const locResult = URI.read(locationURI)
       if (locResult.error) {
-        throw new Error(`Invalid location URI for Blob: ${locResult.error.message}`)
+        throw new Error(`Invalid location URI for ${protocol}: ${locResult.error.message}`)
       }
       const location = locResult.ok
       const providerAddrs = [
         config.addresses.claimAddr.bytes,
-        // Blob Protocol Address
-        config.addresses.blobProtocolBlobAddr.bytes,
+        providerAddrBytes,
       ]
 
-      console.log(`    Publishing location claim for ${shardCID}...`)
+      console.log(`    Publishing location claim for ${shardCID} (${protocol}, ${size} bytes)...`)
 
       // Create the invocation (matching upload-api pattern)
       const claim = await Assert.location.delegate({
