@@ -1,17 +1,13 @@
-
-import { config } from 'dotenv'
+import dotenv from 'dotenv'
+dotenv.config()
 import { DID } from '@ucanto/core'
 import { Absentee } from '@ucanto/principal'
 import { UCAN } from '@storacha/capabilities'
-import { getUploadServiceSigner } from '../src/config.js'
-import { storeDelegations, findDelegationByIssuer } from '../src/lib/tables/delegations-table.js'
-import { provisionSpace } from '../src/lib/tables/consumer-table.js'
 import { delegate } from '@ucanto/core'
-
 import * as readline from 'readline'
 
-// Load env vars
-config()
+// Load env vars immediately
+dotenv.config({path: '../.env'})
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -23,8 +19,13 @@ const question = (query) => new Promise((resolve) => rl.question(query, resolve)
 async function main() {
   console.log('--- Space Ownership Transfer Tool ---\n')
   
+  // Dynamic imports to ensure env vars are loaded first
+  const { getUploadServiceSigner } = await import('../src/config.js')
+  const { storeDelegations, findDelegationByIssuer } = await import('../src/lib/tables/delegations-table.js')
+  const { provisionSpace } = await import('../src/lib/tables/consumer-table.js')
+
   const spaceDID = (await question('Enter Space DID (did:key:...): ')).trim()
-  const inputFromDID = (await question('Enter Current Owner DID (did:key:... or did:mailto:...): ')).trim()
+  const inputFromDID = (await question('Enter Current Owner DID (did:mailto:...): ')).trim()
   const toDID = (await question('Enter New Owner DID (did:mailto:...): ')).trim()
 
   if (!spaceDID || !inputFromDID || !toDID) {
@@ -113,6 +114,7 @@ async function main() {
     console.log('✓ Delegations stored successfully')
   } catch (err) {
     console.error('✗ Failed to store delegations:', err)
+    throw err
   }
 
   // Update provisioning (billing)
@@ -123,6 +125,7 @@ async function main() {
     console.log('✓ Provisioning updated successfully')
   } catch (err) {
     console.error('✗ Failed to update provisioning:', err)
+    throw err
   }
 
   console.log('\n-----------------------------------------------------------')
