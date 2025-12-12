@@ -4,6 +4,7 @@ import { DID } from '@ucanto/core'
 import { Absentee } from '@ucanto/principal'
 import { UCAN } from '@storacha/capabilities'
 import { delegate } from '@ucanto/core'
+import { SpaceAccess } from '@storacha/access'
 import * as readline from 'readline'
 
 // Load env vars immediately
@@ -51,8 +52,15 @@ async function main() {
     process.exit(1)
   }
 
+  // Extract space name for display
+  const spaceMeta = spaceDelegation.facts?.[0]?.space ?? {}
+  const currentSpaceName = spaceMeta.name || '(unnamed)'
+  const spaceAccess = SpaceAccess.from(spaceMeta.access)
+
   console.log('\n--- CONFIRM TRANSFER ---')
   console.log(`Space:         ${spaceDID}`)
+  console.log(`Space Name:    ${currentSpaceName}`)
+  console.log(`Access Type:   ${spaceAccess.type}`)
   console.log(`Current Owner: ${currentOwnerDID} (Verified)`)
   console.log(`New Owner:     ${toDID}`)
   console.log('------------------------')
@@ -62,13 +70,12 @@ async function main() {
   console.log('Audience:', spaceDelegation.audience.did())
   console.log('Capabilities:', JSON.stringify(spaceDelegation.capabilities, null, 2))
 
-  const confirm = await question('Proceed with transfer? (y/N): ')
+  const confirm = await question('\nProceed with transfer? (y/N): ')
   if (confirm.toLowerCase() !== 'y') {
     console.log('Aborted.')
     rl.close()
     process.exit(0)
   }
-  rl.close()
 
   console.log('\nProceeding...')
 
@@ -80,12 +87,34 @@ async function main() {
   // Create Absentee issuer for the "From" account
   const absenteeIssuer = Absentee.from({ id: currentOwnerDID })
   
+  // Reuse spaceMeta already extracted earlier
+  const currentName = spaceMeta.name || '(unnamed)'
+  
+  console.log(`\nCurrent space name: ${currentName}`)
+  const renamePrompt = await question('Enter new space name (or press Enter to keep current): ')
+  const newSpaceName = renamePrompt.trim() || spaceMeta.name
+  
+  // Close readline after all prompts are done
+  rl.close()
+  
+  if (newSpaceName && newSpaceName !== spaceMeta.name) {
+    console.log(`✓ Space will be renamed to: "${newSpaceName}"`)
+  } else if (spaceMeta.name) {
+    console.log(`✓ Keeping current name: "${spaceMeta.name}"`)
+  } else {
+    console.log(`ℹ Space will remain unnamed`)
+  }
+  
+  // Create facts with updated name and normalized access type
+  const facts = [{ space: { name: newSpaceName, access: spaceAccess } }]
+  
   // Delegate the same capabilities as the original delegation
   // We use the generic delegate function from @ucanto/core
   const newDelegation = await delegate({
     issuer: absenteeIssuer,
     audience: DID.parse(toDID),
     capabilities: spaceDelegation.capabilities, // Propagate capabilities
+    facts, // Preserve space metadata with updated name and normalized access
     proofs: [spaceDelegation],
     expiration: Infinity
   })
