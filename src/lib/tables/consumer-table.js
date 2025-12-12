@@ -179,3 +179,87 @@ export async function provisionSpace(customer, space, provider) {
     throw new Error(`Failed to provision space: ${getErrorMessage(error)}`)
   }
 }
+
+/**
+ * Update space provisioning to a new customer (transfers billing ownership)
+ * 
+ * This updates (overwrites) existing records in subscription and consumer tables
+ * to point to the new customer. Unlike provisionSpace, it does NOT enforce
+ * that the record must not exist.
+ * 
+ * @param {string} customer - New Customer account DID (did:mailto:...)
+ * @param {import('@storacha/access').SpaceDID} space - Space DID (did:key:...)
+ * @param {string} [provider] - Provider DID (default: service DID from config)
+ * @returns {Promise<void>}
+ */
+export async function updateSpaceProvisioning(customer, space, provider) {
+  const client = getDynamoClient()
+  const now = new Date().toISOString()
+  
+  // Find existing provision record(s) for this space to get the correct provider(s)
+  // This is crucial because if the service DID has changed (e.g. web3.storage -> storacha),
+  // we want to update the EXISTING record, not create a new one with a different provider.
+  const findCommand = new QueryCommand({
+    TableName: config.tables.consumer,
+    IndexName: 'consumerV2',
+    KeyConditionExpression: 'consumer = :space',
+    ExpressionAttributeValues: { ':space': space }
+  })
+  
+  const existing = await client.send(findCommand)
+  
+  // Use existing providers if found, otherwise use default
+  let providersToUpdate = []
+  if (existing.Items && existing.Items.length > 0) {
+    providersToUpdate = existing.Items.map((/** @type {any} */ item) => item.provider)
+  } else {
+    providersToUpdate = [provider || config.services.uploadServiceDID]
+  }
+  
+  // Generate subscription ID deterministically from consumer (space)
+  const subscription = await createProvisionSubscriptionId(space)
+
+  // Update records for all found providers
+  for (const providerDID of providersToUpdate) {
+    // Update the subscription record
+    const subscriptionCommand = new PutCommand({
+      TableName: config.tables.subscription,
+      Item: {
+        subscription,           // Subscription ID (partition key)
+        provider: providerDID,  // Provider DID (sort key)
+        customer,               // NEW Customer account DID
+        insertedAt: now,
+        updatedAt: now,
+      },
+      // No ConditionExpression - we want to overwrite/update
+    })
+    
+    try {
+      await client.send(subscriptionCommand)
+      console.log(`    ✓ Updated subscription ${subscription} (provider: ${providerDID})`)
+    } catch (error) {
+      throw new Error(`Failed to update subscription: ${getErrorMessage(error)}`)
+    }
+    
+    // Update the consumer record (links space to subscription)
+    const consumerCommand = new PutCommand({
+      TableName: config.tables.consumer,
+      Item: {
+        subscription,           // Subscription ID (partition key)
+        provider: providerDID,  // Provider DID (sort key)
+        consumer: space,        // Space DID
+        customer,               // NEW Customer account DID
+        insertedAt: now,
+        updatedAt: now,
+      },
+      // No ConditionExpression - we want to overwrite/update
+    })
+    
+    try {
+      await client.send(consumerCommand)
+      console.log(`    ✓ Updated space ${space} provisioning to ${customer}`)
+    } catch (error) {
+      throw new Error(`Failed to update space provisioning: ${getErrorMessage(error)}`)
+    }
+  }
+}

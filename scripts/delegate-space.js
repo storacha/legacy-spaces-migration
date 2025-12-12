@@ -23,7 +23,7 @@ async function main() {
   // Dynamic imports to ensure env vars are loaded first
   const { getUploadServiceSigner } = await import('../src/config.js')
   const { storeDelegations, findDelegationByIssuer } = await import('../src/lib/tables/delegations-table.js')
-  const { provisionSpace } = await import('../src/lib/tables/consumer-table.js')
+  const { updateSpaceProvisioning } = await import('../src/lib/tables/consumer-table.js')
 
   const spaceDID = (await question('Enter Space DID (did:key:...): ')).trim()
   const inputFromDID = (await question('Enter Current Owner DID (did:mailto:...): ')).trim()
@@ -150,7 +150,7 @@ async function main() {
   console.log('\nUpdating provisioning (billing) to new owner...')
   try {
     // This overwrites the existing record in consumer table, effectively transferring ownership
-    await provisionSpace(toDID, spaceDID)
+    await updateSpaceProvisioning(toDID, spaceDID)
     console.log('✓ Provisioning updated successfully')
   } catch (err) {
     console.error('✗ Failed to update provisioning:', err)
