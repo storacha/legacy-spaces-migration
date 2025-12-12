@@ -55,7 +55,11 @@ import { verifyMigration } from './lib/migration-verify.js'
 import { getErrorMessage } from './lib/error-utils.js'
 import { SpaceDID } from '@storacha/capabilities/utils'
 import { getCustomerForSpace } from './lib/tables/consumer-table.js'
-import { getOrCreateMigrationSpaceForCustomer } from './lib/migration-utils.js'
+import { 
+  getOrCreateMigrationSpaceForCustomer,
+  STEP,
+  FAILURE_REASON,
+} from './lib/migration-utils.js'
 import { getUpload, countUploadsForSpace } from './lib/tables/upload-table.js'
 import {
   createSpaceProgress,
@@ -216,10 +220,13 @@ async function migrateUpload(upload, options = {}) {
     }
   }
 
-  try {
+    // Track current step for error reporting
+    let currentStep = STEP.INIT
+
+    try {
     // Test gateway retrieval BEFORE migration (baseline)
     let retrievalBeforeMigration = null
-    if (options.verifyOnly) {
+    if (verifyOnly) {
       console.log(`\n>>> Verify-Only Mode: Testing gateway retrieval BEFORE checking migration...`)
       const { verifyGatewayRetrieval } = await import('./lib/migration-verify.js')
       retrievalBeforeMigration = await verifyGatewayRetrieval({ rootCID: upload.root })
@@ -227,7 +234,7 @@ async function migrateUpload(upload, options = {}) {
     }
 
     // If verify-only mode, skip to verification
-    if (options.verifyOnly) {
+    if (verifyOnly) {
       console.log(`>>> Checking migration status...`)
       // Pass null for gatewayAuthResult to indicate it should be skipped in verify-only mode
       const verificationResult = await verifyMigration({
@@ -250,6 +257,7 @@ async function migrateUpload(upload, options = {}) {
     }
 
     // Step 1: Check what migration steps are needed
+    currentStep = STEP.ANALYZE
     console.log(`\nSTEP 1: Analyze Migration Status ${'─'.repeat(35)}`)
     const status = await checkMigrationNeeded(upload)
 
@@ -305,9 +313,10 @@ async function migrateUpload(upload, options = {}) {
 
     let shardsWithSizes = null
     let migrationSpace = null
-    let indexCID = status.indexCID
+    let indexCID = status.indexCID ? status.indexCID.toString() : null
 
     // Step 2: Build and register index
+    currentStep = STEP.INDEX_GENERATION
     const shouldRunIndex = !options.testMode || options.testMode === 'index'
 
     console.log(`\nSTEP 2: Generate and Register Index ${'─'.repeat(33)}`)
@@ -315,7 +324,7 @@ async function migrateUpload(upload, options = {}) {
       const result = await buildAndMigrateIndex({ upload,  })
       shardsWithSizes = result.shards
       migrationSpace = result.migrationSpace
-      indexCID = result.indexCID
+      indexCID = result.indexCID.toString()
       console.log(
         `  Building index:        ✓ complete (${upload.shards.length} entries)`
       )
@@ -355,6 +364,7 @@ async function migrateUpload(upload, options = {}) {
     }
 
     // Step 3: Republish location claims
+    currentStep = STEP.LOCATION_CLAIMS
     const shouldRunLocationClaims =
       !options.testMode || options.testMode === 'location-claims'
 
@@ -405,6 +415,7 @@ async function migrateUpload(upload, options = {}) {
     }
 
     // Step 4: Create gateway authorization
+    currentStep = STEP.GATEWAY_AUTH
     const shouldRunGatewayAuth =
       !options.testMode || options.testMode === 'gateway-auth'
     let gatewayAuthResult = null
@@ -457,23 +468,47 @@ async function migrateUpload(upload, options = {}) {
     }
 
     // Step 5: Verify migration completed successfully
+    currentStep = STEP.VERIFY
     console.log(`\nSTEP 5: Verify Migration ${'─'.repeat(43)}`)
     const verificationResult = await verifyMigration({
       upload,
       gatewayAuthResult,
       testGatewayRetrieval: false, // Don't test again, we already did it above
     })
+    
+    // Determine failure reason if verification failed
+    let failureReason = undefined
+    if (!verificationResult.success) {
+      if (!verificationResult.indexVerified) {
+        failureReason = FAILURE_REASON.INDEX_MISSING
+      } else if (!verificationResult.locationClaimsVerified) {
+        failureReason = FAILURE_REASON.LOCATION_CLAIMS_MISSING 
+      } else if (!verificationResult.allShardsHaveSpace) {
+        failureReason = FAILURE_REASON.SPACE_INFO_MISSING
+      } else {
+        failureReason = FAILURE_REASON.VERIFICATION_FAILED
+      }
+      
+      // If gateway auth failed, that's a more specific root cause for some verification failures
+      if (gatewayAuthResult?.reason === 'no-delegation-found') {
+        failureReason = FAILURE_REASON.MISSING_DELEGATION
+      } else if (gatewayAuthResult?.success === false) {
+        failureReason = FAILURE_REASON.GATEWAY_AUTH_FAILED
+      }
+    }
 
     return {
       success: verificationResult.success,
       upload: upload.root,
       space: upload.space,
       migrationSpace,
-      indexCID: indexCID?.toString(),
+      indexCID,
       shardsRepublished: status.shardsNeedingLocationClaims.length,
       status,
+      gatewayAuthResult,
       retrievalAfterAuth,
       verification: verificationResult,
+      failureReason,
       error: verificationResult.success
         ? undefined
         : verificationResult.details,
@@ -484,10 +519,18 @@ async function migrateUpload(upload, options = {}) {
       console.error(error.stack)
     }
 
+    // Map step to failure reason
+    let failureReason = FAILURE_REASON.UNKNOWN_ERROR
+    if (currentStep === STEP.INDEX_GENERATION) failureReason = FAILURE_REASON.INDEX_GENERATION_FAILED
+    else if (currentStep === STEP.LOCATION_CLAIMS) failureReason = FAILURE_REASON.LOCATION_CLAIM_FAILED
+    else if (currentStep === STEP.GATEWAY_AUTH) failureReason = FAILURE_REASON.GATEWAY_AUTH_FAILED
+    else if (currentStep === STEP.ANALYZE) failureReason = FAILURE_REASON.ANALYSIS_FAILED
+
     return {
       success: false,
       upload: upload.root,
       space: upload.space,
+      failureReason,
       error: getErrorMessage(error),
     }
   }
@@ -634,6 +677,8 @@ async function runMigrationMode(values) {
 
         let spaceProcessed = 0
         let spaceFailed = false
+        /** @type {Record<string, number>} */
+        const spaceFailureSummary = {}
         
         for await (const upload of sampleUploads({
           limit: limit,
@@ -650,9 +695,16 @@ async function runMigrationMode(values) {
             totalUploads: limit,
           })
 
+          // Determine if this upload failed and why
+          let failureReason = null
           if (!result.success) {
+            failureReason = result.failureReason || result.error || FAILURE_REASON.UNKNOWN_ERROR
+          }
+          
+          if (failureReason) {
             spacesWithFailures.add(space)
             spaceFailed = true
+            spaceFailureSummary[failureReason] = (spaceFailureSummary[failureReason] || 0) + 1
           }
 
           results.push(result)
@@ -683,7 +735,8 @@ async function runMigrationMode(values) {
         // Mark space status at the end
         if (customer && !verifyOnly && !testMode) {
            if (spaceFailed) {
-             await markSpaceFailed(customer, space, 'One or more uploads failed')
+             const errorSummary = JSON.stringify(spaceFailureSummary)
+             await markSpaceFailed(customer, space, errorSummary)
            } else {
              await markSpaceCompleted(customer, space)
            }
