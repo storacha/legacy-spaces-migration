@@ -4,6 +4,93 @@
  * Handles creation, provisioning, and tracking of migration spaces
  * where legacy content indexes are stored.
  */
+
+/**
+ * Migration step constants
+ * Tracks which step of the migration process is currently executing
+ */
+export const STEP = {
+  /** Initial state before migration starts */
+  INIT: 'INIT',
+  /** Analyzing what migration steps are needed */
+  ANALYZE: 'ANALYZE',
+  /** Generating and registering sharded DAG index */
+  INDEX_GENERATION: 'INDEX_GENERATION',
+  /** Republishing location claims with space information */
+  LOCATION_CLAIMS: 'LOCATION_CLAIMS',
+  /** Creating gateway authorization delegations */
+  GATEWAY_AUTH: 'GATEWAY_AUTH',
+  /** Verifying all migration steps completed successfully by retrieving the content */
+  VERIFY: 'VERIFY',
+}
+
+/**
+ * Failure reason constants
+ * Categorizes why a migration failed for easy filtering and debugging
+ */
+export const FAILURE_REASON = {
+  /** Generic error - unable to categorize the failure */
+  UNKNOWN_ERROR: 'UNKNOWN_ERROR',
+  
+  /** Failed during migration analysis step (checking what needs to be done) */
+  ANALYSIS_FAILED: 'ANALYSIS_FAILED',
+  
+  /** Failed to generate or register the sharded DAG index
+   * Common causes:
+   * - Index worker unavailable
+   * - Failed to upload index blob to migration space
+   * - Failed to publish assert/index claim to indexing service
+   */
+  INDEX_GENERATION_FAILED: 'INDEX_GENERATION_FAILED',
+  
+  /** Failed to republish location claims with space information
+   * Common causes:
+   * - Failed to query shard sizes from DynamoDB (shard X not found in allocations or store table for space Y)
+   * - Failed to publish assert/location claim to indexing service
+   * - Failed to send IPNI advertisement to queue
+   */
+  LOCATION_CLAIM_FAILED: 'LOCATION_CLAIM_FAILED',
+  
+  /** Failed to create gateway authorization (excluding missing delegation)
+   * Common causes:
+   * - Failed to create Absentee delegations
+   * - Failed to create service attestations
+   * - Failed to invoke access/delegate on gateway
+   */
+  GATEWAY_AUTH_FAILED: 'GATEWAY_AUTH_FAILED',
+  
+  /** Space has no delegation to an account (legacy space without owner)
+   * This is the most common failure for legacy spaces.
+   * These spaces were created before the delegation system existed.
+   * Resolution: Manual delegation creation or space transfer to new owner.
+   */
+  MISSING_DELEGATION: 'MISSING_DELEGATION',
+  
+  /** Verification failed: Index claim not found in indexing service
+   * The index was supposedly created but can't be verified.
+   * May indicate indexing service lag or failed index registration.
+   */
+  INDEX_MISSING: 'INDEX_MISSING',
+  
+  /** Verification failed: Location claims not found for one or more shards
+   * Location claims were supposedly published but can't be verified.
+   * May indicate indexing service lag or failed claim publication.
+   */
+  LOCATION_CLAIMS_MISSING: 'LOCATION_CLAIMS_MISSING',
+  
+  /** Verification failed: Location claims exist but lack space information
+   * Claims were published but the space field is missing.
+   * May indicate bug in republishLocationClaims function.
+   */
+  SPACE_INFO_MISSING: 'SPACE_INFO_MISSING',
+  
+  /** Verification failed for unknown reason
+   * All steps completed but verification still failed.
+   * Check verification details for more information.
+   */
+  VERIFICATION_FAILED: 'VERIFICATION_FAILED',
+}
+
 import { sha256 } from 'multiformats/hashes/sha2'
 import * as Link from 'multiformats/link'
 import { Space } from '@storacha/access'
@@ -12,7 +99,7 @@ import * as Signer from '@ucanto/principal/ed25519'
 import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
 import { generateShardedIndex } from './index-worker.js'
-import { getShardSize, getShardInfo } from './tables/shard-data-table.js'
+import { getShardInfo } from './tables/shard-data-table.js'
 import {
   getMigrationSpace,
   createMigrationSpace,
