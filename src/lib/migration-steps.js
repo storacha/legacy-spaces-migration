@@ -33,6 +33,7 @@ import {
   getOrCreateMigrationSpaceForCustomer,
   delegateMigrationSpaceToCustomer,
   generateDAGIndex,
+  verifyResourceExists as verifyResource,
 } from './migration-utils.js'
 import {
   config,
@@ -45,9 +46,9 @@ import { LocationCommitmentMetadata } from './ipni/location.js'
 import { getIPNIPublishingQueue } from './queues/ipni-publishing-queue.js'
 import { encodeContextID } from './ipni/advertisement.js'
 import { getErrorMessage } from './error-utils.js'
-import { URI } from '@ucanto/core/schema'
 import { claimHasSpace, findClaimsForShard } from './claim-utils.js'
 import { storeClaim } from './stores/claim-store.js'
+import { URI } from '@ucanto/core/schema'
 
 /**
  * Determine what migration steps are needed for an upload by checking the indexing service
@@ -454,10 +455,16 @@ export async function republishLocationClaims({
         providerAddrBytes = config.addresses.blobProtocolBlobAddr.bytes
       }
 
+      const resourceCheck = await verifyResource(locationURI)
+      if (!resourceCheck.exists) {
+        throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found in R2 (${locationURI})`)
+      }
+
       const locResult = URI.read(locationURI)
       if (locResult.error) {
         throw new Error(`Invalid location URI for ${protocol}: ${locResult.error.message}`)
       }
+
       const location = locResult.ok
       const providerAddrs = [
         config.addresses.claimAddr.bytes,
