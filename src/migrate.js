@@ -68,6 +68,13 @@ import {
   markSpaceFailed,
   getSpaceProgress
 } from './lib/tables/migration-progress-table.js'
+import {
+  markCustomerInProgress,
+  markCustomerCompleted,
+  markCustomerFailed,
+  updateCustomerProgress,
+  getCustomerStatus
+} from './lib/tables/migration-customers-table.js'
 
 /**
  * @typedef {object} SpaceProgress
@@ -628,42 +635,56 @@ async function runMigrationMode(values) {
 
     results.push(result)
   } else {
-    // Resolve target spaces based on filter options
-    const targetSpaces = await resolveTargetSpaces({
-      space: values.space,
-      customer: values.customer,
-      customers,
-    })
-
-    // Process uploads from target spaces
-    if (targetSpaces && targetSpaces.length > 0) {
-      // Iterate through each space to sample uploads based on the specified limit
-      for (const space of targetSpaces) {
-        // Initialize or resume progress tracking for this space
-        let customer = values.customer
-        if (!customer && values['customers-file']) {
-          // If iterating from file, we need to find the customer for this space
-          // This is a bit expensive but necessary if we want per-customer tracking
-          // However, for bulk migration, we usually know the customer map.
-          // For now, let's try to fetch it if not provided.
-          customer = await getCustomerForSpace(space)
+    // Process by customer when using customers file for proper customer-level tracking
+    if (customers && customers.length > 0) {
+      const { getSpacesForCustomer } = await import('./lib/tables/consumer-table.js')
+      
+      console.log(`Processing ${customers.length} customer(s)...`)
+      
+      for (const customerDID of customers) {
+        // Check if customer is already completed in DynamoDB
+        try {
+          const customerStatus = await getCustomerStatus(customerDID)
+          if (customerStatus?.status === 'completed') {
+            console.log(`Customer ${customerDID} already completed. Skipping.`)
+            continue
+          }
+          
+          // Mark customer as in-progress
+          if (!verifyOnly && !testMode) {
+            await markCustomerInProgress(customerDID)
+          }
+        } catch (err) {
+          console.warn(`Failed to check/update customer status for ${customerDID}:`, getErrorMessage(err))
         }
         
-        if (customer) {
+        // Get spaces for this customer
+        const customerSpaces = await getSpacesForCustomer(customerDID)
+        console.log(`\nCustomer ${customerDID}: ${customerSpaces.length} spaces`)
+        
+        let customerCompletedSpaces = 0
+        let customerCompletedUploads = 0
+        let customerFailed = false
+        /** @type {Record<string, number>} */
+        const customerFailureSummary = {}
+        
+        for (const space of customerSpaces) {
+          // Check if space is already completed
           try {
-            // Check if space is already completed
-            const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customer, space))
+            const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customerDID, space))
             if (progress && progress.status === 'completed') {
-              console.log(`Space ${space} already completed. Skipping.`)
+              console.log(`  Space ${space} already completed. Skipping.`)
+              customerCompletedSpaces++
+              customerCompletedUploads += progress.completedUploads || 0
               continue
             }
             
             // Calculate total uploads if not already known
             const totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
             
-            if (!progress) {
+            if (!progress && !verifyOnly && !testMode) {
               await createSpaceProgress({
-                customer,
+                customer: customerDID,
                 space,
                 totalUploads: totalUploadsInSpace,
                 instanceId: values['instance-id'] || 'local',
@@ -671,75 +692,108 @@ async function runMigrationMode(values) {
               })
             }
           } catch (err) {
-            console.warn(`Failed to track progress for space ${space}:`, getErrorMessage(err))
+            console.warn(`  Failed to track progress for space ${space}:`, getErrorMessage(err))
           }
-        }
 
-        let spaceProcessed = 0
-        let spaceFailed = false
-        /** @type {Record<string, number>} */
-        const spaceFailureSummary = {}
-        
-        for await (const upload of sampleUploads({
-          limit: limit,
-          space: space,
-        })) {
-          processed++
-          spaceProcessed++
-          processedSpaces.add(space)
+          let spaceProcessed = 0
+          let spaceFailed = false
+          /** @type {Record<string, number>} */
+          const spaceFailureSummary = {}
+          
+          for await (const upload of sampleUploads({
+            limit: limit,
+            space: space,
+          })) {
+            processed++
+            spaceProcessed++
+            processedSpaces.add(space)
 
-          const result = await migrateUpload(upload, {
-            testMode,
-            verifyOnly,
-            uploadNumber: processed,
-            totalUploads: limit,
-          })
+            const result = await migrateUpload(upload, {
+              testMode,
+              verifyOnly,
+              uploadNumber: processed,
+              totalUploads: limit,
+            })
 
-          // Determine if this upload failed and why
-          let failureReason = null
-          if (!result.success) {
-            failureReason = result.failureReason || result.error || FAILURE_REASON.UNKNOWN_ERROR
+            // Determine if this upload failed and why
+            let failureReason = null
+            if (!result.success) {
+              failureReason = result.failureReason || result.error || FAILURE_REASON.UNKNOWN_ERROR
+            }
+            
+            if (failureReason) {
+              spacesWithFailures.add(space)
+              spaceFailed = true
+              customerFailed = true
+              spaceFailureSummary[failureReason] = (spaceFailureSummary[failureReason] || 0) + 1
+              customerFailureSummary[failureReason] = (customerFailureSummary[failureReason] || 0) + 1
+            }
+
+            results.push(result)
+
+            // Update space progress periodically
+            if (!verifyOnly && !testMode && spaceProcessed % 10 === 0) {
+               try {
+                 await updateSpaceProgress({
+                   customer: customerDID,
+                   space,
+                   completedUploads: spaceProcessed,
+                   lastProcessedUpload: upload.root
+                 })
+               } catch (e) {
+                 // Ignore progress update errors
+               }
+            }
+
+            if (limit !== Infinity && processed >= limit) {
+              break
+            }
+
+            // Small delay between uploads
+            await new Promise((resolve) => setTimeout(resolve, 100))
           }
           
-          if (failureReason) {
-            spacesWithFailures.add(space)
-            spaceFailed = true
-            spaceFailureSummary[failureReason] = (spaceFailureSummary[failureReason] || 0) + 1
-          }
-
-          results.push(result)
-
-          // Update progress periodically (every 10 uploads or if failed)
-          if (customer && !verifyOnly && !testMode) {
+          // Mark space status at the end
+          if (!verifyOnly && !testMode) {
              try {
-               await updateSpaceProgress({
-                 customer,
-                 space,
-                 completedUploads: spaceProcessed, // This tracks uploads processed in THIS run. Ideally we should track cumulative.
-                 // For now, simple update. 
-                 lastProcessedUpload: upload.root
-               })
+               if (spaceFailed) {
+                 const errorSummary = JSON.stringify(spaceFailureSummary)
+                 await markSpaceFailed(customerDID, space, errorSummary)
+               } else {
+                 await markSpaceCompleted(customerDID, space)
+                 customerCompletedSpaces++
+               }
+               customerCompletedUploads += spaceProcessed
              } catch (e) {
-               // Ignore progress update errors to avoid stopping migration
+               // Ignore
              }
           }
-
+          
           if (limit !== Infinity && processed >= limit) {
             break
           }
-
-          // Small delay between uploads to avoid overwhelming services
-          await new Promise((resolve) => setTimeout(resolve, 100))
         }
         
-        // Mark space status at the end
-        if (customer && !verifyOnly && !testMode) {
-           if (spaceFailed) {
-             const errorSummary = JSON.stringify(spaceFailureSummary)
-             await markSpaceFailed(customer, space, errorSummary)
-           } else {
-             await markSpaceCompleted(customer, space)
-           }
+        // Update customer status after processing all their spaces
+        if (!verifyOnly && !testMode) {
+          try {
+            // Update customer progress
+            await updateCustomerProgress({
+              customer: customerDID,
+              completedSpaces: customerCompletedSpaces,
+              completedUploads: customerCompletedUploads
+            })
+            
+            // Mark customer completed or failed
+            if (customerFailed) {
+              const errorSummary = JSON.stringify(customerFailureSummary)
+              await markCustomerFailed(customerDID, errorSummary)
+            } else {
+              await markCustomerCompleted(customerDID)
+            }
+          } catch (err) {
+            console.warn(`Failed to update customer status for ${customerDID}:`, getErrorMessage(err))
+          }
         }
         
         if (limit !== Infinity && processed >= limit) {
@@ -747,8 +801,123 @@ async function runMigrationMode(values) {
         }
       }
     } else {
-      console.log("No target spaces found. Exiting.")
-      process.exit(0)
+      // Original flow for single customer/space or sampling
+      const targetSpaces = await resolveTargetSpaces({
+        space: values.space,
+        customer: values.customer,
+        customers,
+      })
+
+      // Process uploads from target spaces
+      if (targetSpaces && targetSpaces.length > 0) {
+        // Iterate through each space to sample uploads based on the specified limit
+        for (const space of targetSpaces) {
+          // Initialize or resume progress tracking for this space
+          let customer = values.customer
+          if (!customer) {
+            customer = await getCustomerForSpace(space)
+          }
+          
+          if (customer) {
+            try {
+              // Check if space is already completed
+              const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customer, space))
+              if (progress && progress.status === 'completed') {
+                console.log(`Space ${space} already completed. Skipping.`)
+                continue
+              }
+              
+              // Calculate total uploads if not already known
+              const totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
+              
+              if (!progress) {
+                await createSpaceProgress({
+                  customer,
+                  space,
+                  totalUploads: totalUploadsInSpace,
+                  instanceId: values['instance-id'] || 'local',
+                  workerId: values['worker-id'] || '1'
+                })
+              }
+            } catch (err) {
+              console.warn(`Failed to track progress for space ${space}:`, getErrorMessage(err))
+            }
+          }
+
+          let spaceProcessed = 0
+          let spaceFailed = false
+          /** @type {Record<string, number>} */
+          const spaceFailureSummary = {}
+          
+          for await (const upload of sampleUploads({
+            limit: limit,
+            space: space,
+          })) {
+            processed++
+            spaceProcessed++
+            processedSpaces.add(space)
+
+            const result = await migrateUpload(upload, {
+              testMode,
+              verifyOnly,
+              uploadNumber: processed,
+              totalUploads: limit,
+            })
+
+            // Determine if this upload failed and why
+            let failureReason = null
+            if (!result.success) {
+              failureReason = result.failureReason || result.error || FAILURE_REASON.UNKNOWN_ERROR
+            }
+            
+            if (failureReason) {
+              spacesWithFailures.add(space)
+              spaceFailed = true
+              spaceFailureSummary[failureReason] = (spaceFailureSummary[failureReason] || 0) + 1
+            }
+
+            results.push(result)
+
+            // Update progress periodically (every 10 uploads or if failed)
+            if (customer && !verifyOnly && !testMode) {
+               try {
+                 await updateSpaceProgress({
+                   customer,
+                   space,
+                   completedUploads: spaceProcessed,
+                   lastProcessedUpload: upload.root
+                 })
+               } catch (e) {
+                 // Ignore progress update errors to avoid stopping migration
+               }
+            }
+
+            if (limit !== Infinity && processed >= limit) {
+              break
+            }
+
+            // Small delay between uploads to avoid overwhelming services
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
+          
+          // Mark space status at the end
+          if (customer && !verifyOnly && !testMode) {
+             if (spaceFailed) {
+               const errorSummary = JSON.stringify(spaceFailureSummary)
+               await markSpaceFailed(customer, space, errorSummary)
+             } else {
+               await markSpaceCompleted(customer, space)
+             }
+          }
+          
+          if (limit !== Infinity && processed >= limit) {
+            break
+          }
+        }
+      } else {
+        console.log("No target spaces found. Exiting.")
+        process.exit(0)
+      }
     }
   }
 

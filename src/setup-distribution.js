@@ -29,17 +29,74 @@ import { parseArgs } from 'node:util'
 import { ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { validateConfig, config } from './config.js'
 import { getDynamoClient } from './lib/dynamo-client.js'
+import { batchAssignCustomers } from './lib/tables/migration-customers-table.js'
 import fs from 'fs/promises'
 import path from 'path'
 
 const DISTRIBUTION_DIR = 'migration-state'
 
 /**
+ * Skip list for customers to exclude from migration
+ * Can be exact matches or prefixes (without trailing colon)
+ * Examples:
+ *   'did:mailto:mailslurp.biz' - skips all mailslurp.biz customers
+ *   'did:mailto:mailslurp.com' - skips all mailslurp.com customers  
+ *   'did:mailto:mailslurp.net' - skips all mailslurp.net customers
+ *   'did:mailto:gmail.com:testuser' - skips specific user
+ */
+const SKIP_LIST = [
+  // CI accounts
+  'did:mailto:mailslurp.biz',
+  'did:mailto:mailslurp.com',
+  'did:mailto:mailslurp.net',
+  // Customer Accounts that are blocked due to space ownership transfer
+  'did:mailto:weatherxm.com:weatherxmdev',
+  'did:mailto:textile.io:ops+basin',
+]
+
+/**
+ * Include list for filtering customers (set at runtime via --filter)
+ * @type {string[]}
+ */
+let INCLUDE_LIST = []
+
+/**
+ * Check if a customer should be skipped based on skip list
+ * @param {string} customer - Customer DID
+ * @returns {boolean} True if customer should be skipped
+ */
+function shouldSkipCustomer(customer) {
+  for (const pattern of SKIP_LIST) {
+    if (customer === pattern || customer.startsWith(pattern + ':')) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Check if a customer matches the include filter
+ * @param {string} customer - Customer DID
+ * @returns {boolean} True if customer matches filter (or no filter set)
+ */
+function matchesIncludeFilter(customer) {
+  if (INCLUDE_LIST.length === 0) {
+    return true // No filter, include all
+  }
+  for (const pattern of INCLUDE_LIST) {
+    if (customer === pattern || customer.startsWith(pattern + ':') || customer.includes(':' + pattern + ':')) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * Scan consumer table to get space -> customer mappings
  * 
  * @param {number} segment - Segment number (0-based)
  * @param {number} totalSegments - Total number of segments
- * @returns {Promise<{segment: number, scanned: number, customerSpacesMap: Map<string, Set<string>>}>} Map of customer -> Set of spaces
+ * @returns {Promise<{segment: number, scanned: number, skipped: number, customerSpacesMap: Map<string, Set<string>>}>} Map of customer -> Set of spaces
  */
 async function scanConsumerSegment(segment, totalSegments) {
   const client = getDynamoClient()
@@ -47,6 +104,7 @@ async function scanConsumerSegment(segment, totalSegments) {
   const customerSpacesMap = new Map() // customer -> Set(spaces)
   
   let scanned = 0
+  let skipped = 0
   /** @type {Record<string, any> | undefined} */
   let lastEvaluatedKey
   const startTime = Date.now()
@@ -74,6 +132,16 @@ async function scanConsumerSegment(segment, totalSegments) {
     
     for (const record of response.Items) {
       if (record.consumer && record.customer) {
+        // Skip customers in skip list
+        if (shouldSkipCustomer(record.customer)) {
+          skipped++
+          continue
+        }
+        // Check include filter
+        if (!matchesIncludeFilter(record.customer)) {
+          skipped++
+          continue
+        }
         if (!customerSpacesMap.has(record.customer)) {
           customerSpacesMap.set(record.customer, new Set())
         }
@@ -91,9 +159,9 @@ async function scanConsumerSegment(segment, totalSegments) {
   }
   
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-  console.log(`  [Segment ${segment}] Complete: ${scanned.toLocaleString()} consumer records in ${elapsed}s`)
+  console.log(`  [Segment ${segment}] Complete: ${scanned.toLocaleString()} records, ${skipped.toLocaleString()} skipped in ${elapsed}s`)
   
-  return { segment, scanned, customerSpacesMap }
+  return { segment, scanned, skipped, customerSpacesMap }
 }
 
 /**
@@ -213,9 +281,11 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
   // Merge results from all segments
   const customerSpacesMap = new Map() // customer -> Set(spaces)
   let totalConsumerRecords = 0
+  let totalSkipped = 0
   
   for (const result of results) {
     totalConsumerRecords += result.scanned
+    totalSkipped += result.skipped
     
     for (const [customer, spaces] of result.customerSpacesMap.entries()) {
       if (!customerSpacesMap.has(customer)) {
@@ -231,6 +301,7 @@ async function discoverCustomers({ minUploads = 0, parallelSegments = 4 } = {}) 
   console.log()
   console.log(`✓ Consumer table scan complete in ${scanElapsed}s`)
   console.log(`✓ Total consumer records scanned: ${totalConsumerRecords.toLocaleString()}`)
+  console.log(`✓ Skipped (skip list): ${totalSkipped.toLocaleString()}`)
   console.log(`✓ Unique customers found: ${customerSpacesMap.size.toLocaleString()}`)
   console.log()
   
@@ -580,15 +651,20 @@ function estimateMigrationTime(distribution, workersPerInstance = 10) {
 }
 
 /**
- * Save distribution to files
+ * Save distribution to files and DynamoDB
  * @param {Array<{instanceId: number, customers: Array<string>, totalUploads: number, totalSpaces: number, totalEmptySpaces: number, totalAllSpaces: number}>} distribution 
+ * @param {Array<{customer: string, uploadCount: number, spaceCount: number, emptySpaceCount?: number, totalSpaceCount?: number}>} customerData - Full customer data for DynamoDB
+ * @param {string} [filter] - Filter used (e.g., 'storacha.network')
  */
-async function saveDistribution(distribution) {
+async function saveDistribution(distribution, customerData, filter) {
   // Ensure directory exists
   await fs.mkdir(DISTRIBUTION_DIR, { recursive: true })
   
   console.log('Saving distribution files...')
   console.log('='.repeat(70))
+  
+  // Create a map of customer -> data for quick lookup
+  const customerMap = new Map(customerData.map(c => [c.customer, c]))
   
   for (const instance of distribution) {
     const filename = `instance-${instance.instanceId}-customers-${config.environment}.json`
@@ -610,6 +686,40 @@ async function saveDistribution(distribution) {
   
   console.log()
   console.log(`Distribution files saved to: ${DISTRIBUTION_DIR}/`)
+  console.log()
+  
+  // Save to DynamoDB
+  console.log('Saving customer assignments to DynamoDB...')
+  console.log('='.repeat(70))
+  
+  try {
+    // Prepare all customer records for batch write
+    /** @type {Array<{customer: string, totalSpaces: number, totalUploads: number, instanceId: number, filter?: string}>} */
+    const allCustomerRecords = []
+    
+    for (const instance of distribution) {
+      for (const customerDID of instance.customers) {
+        const data = customerMap.get(customerDID)
+        if (data) {
+          allCustomerRecords.push({
+            customer: customerDID,
+            totalSpaces: data.totalSpaceCount || data.spaceCount,
+            totalUploads: data.uploadCount,
+            instanceId: instance.instanceId,
+            filter: filter || undefined,
+          })
+        }
+      }
+    }
+    
+    // Batch write to DynamoDB
+    await batchAssignCustomers(allCustomerRecords)
+    console.log(`✓ ${allCustomerRecords.length} customers saved to DynamoDB (${config.tables.migrationCustomers})`)
+  } catch (error) {
+    console.error(`⚠ Failed to save to DynamoDB: ${/** @type {Error} */ (error).message}`)
+    console.error('  Local files were saved successfully. You can retry DynamoDB later.')
+  }
+  
   console.log()
 }
 
@@ -667,6 +777,11 @@ async function main() {
         default: '4',
         description: 'Number of parallel scan segments (1-10)',
       },
+      'filter': {
+        type: 'string',
+        short: 'f',
+        description: 'Only include customers matching pattern (e.g., storacha.network)',
+      },
     },
   })
   
@@ -678,6 +793,11 @@ async function main() {
   const parallelSegments = Math.max(1, Math.min(10, parseInt(values['parallel-segments'], 10)))
   const workersPerInstance = parseInt(values['workers-per-instance'], 10)
   
+  // Set include filter if provided
+  if (values.filter) {
+    INCLUDE_LIST = values.filter.split(',').map(f => f.trim())
+  }
+  
   console.log()
   console.log('Legacy Content Migration - Setup Distribution')
   console.log('='.repeat(70))
@@ -685,6 +805,9 @@ async function main() {
   console.log(`Region: ${config.aws.region}`)
   console.log(`Consumer Table: ${config.tables.consumer}`)
   console.log(`Upload Table: ${config.tables.upload}`)
+  console.log(`Skip List: ${SKIP_LIST.length > 0 ? SKIP_LIST.join(', ') : '(none)'}`)
+  console.log(`Include Filter: ${INCLUDE_LIST.length > 0 ? INCLUDE_LIST.join(', ') : '(all customers)'}`)
+  console.log()
 
   // Ask for confirmation
   const readline = await import('readline')
@@ -729,8 +852,9 @@ async function main() {
   printDistributionSummary(distribution, stats.totalUploads, workersPerInstance)
   estimateMigrationTime(distribution, workersPerInstance)
   
-  // Save to files
-  await saveDistribution(distribution)
+  // Save to files and DynamoDB
+  const filterStr = INCLUDE_LIST.length > 0 ? INCLUDE_LIST.join(',') : undefined
+  await saveDistribution(distribution, customers, filterStr)
   
   // Print usage instructions
   printUsageInstructions(numInstances)

@@ -135,7 +135,12 @@ export const config = {
       process.env.MIGRATION_PROGRESS_TABLE_NAME ||
       `${
         process.env.STORACHA_ENV === 'staging' ? 'staging' : 'prod'
-      }-migration-progress`, // Migration progress tracking
+      }-migration-progress`, // Migration progress tracking (space-level)
+    migrationCustomers:
+      process.env.MIGRATION_CUSTOMERS_TABLE_NAME ||
+      `${
+        process.env.STORACHA_ENV === 'staging' ? 'staging' : 'prod'
+      }-migration-customers`, // Migration customer tracking (customer-level)
   },
 
   addresses: {
