@@ -29,6 +29,11 @@ async function main() {
         short: 'c',
         default: '10',
         description: 'Concurrency level',
+      },
+      'verify-only': {
+        type: 'boolean',
+        default: false,
+        description: 'Verify migration status without making changes',
       }
     },
   })
@@ -40,6 +45,7 @@ async function main() {
 
   const instanceId = values.instance
   const concurrency = values.concurrency
+  const verifyOnly = values['verify-only']
   const env = config.environment
   
   // Read instance file
@@ -67,12 +73,19 @@ async function main() {
   console.log('='.repeat(50))
   console.log()
 
-  // Spawn migrate.js
-  const migrateProcess = spawn('node', [
+  // Build args for migrate.js
+  const migrateArgs = [
     'src/migrate.js',
     '--customers-file', tempFile,
     '--concurrency', concurrency
-  ], {
+  ]
+  
+  if (verifyOnly) {
+    migrateArgs.push('--verify-only')
+  }
+
+  // Spawn migrate.js
+  const migrateProcess = spawn('node', migrateArgs, {
     stdio: 'inherit',
     env: { ...process.env }
   })
