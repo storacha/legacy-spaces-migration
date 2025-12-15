@@ -1,3 +1,5 @@
+import { URI } from '@ucanto/core/schema'
+
 /**
  * Utility functions for managing migration spaces
  * 
@@ -282,4 +284,29 @@ export async function generateDAGIndex(upload) {
   
   // Return shards with sizes for reuse downstream (avoids re-querying DynamoDB)
   return { indexBytes, indexCID, indexDigest, shards }
+}
+
+/**
+ * Verify that a resource (blob or car) exists in R2 storage before publishing a location claim
+ * 
+ * This handles incomplete uploads where allocation exists in DynamoDB but
+ * the actual file was never uploaded to R2.
+ * 
+ * Works for both:
+ * - Blob protocol: .blob files (from allocations table)
+ * - Store protocol: .car files (from store table)
+ * 
+ * @param {string} locationURI - Full URL to the blob or car file in R2
+ * @returns {Promise<{exists: boolean, error?: string}>}
+ */
+export async function verifyResourceExists(locationURI) {
+  try {
+    const headRes = await fetch(locationURI, { method: 'HEAD' })
+    if (!headRes.ok) {
+      return { exists: false, error: `HTTP ${headRes.status}` }
+    }
+    return { exists: true }
+  } catch (fetchError) {
+    return { exists: false, error: getErrorMessage(fetchError) }
+  }
 }
