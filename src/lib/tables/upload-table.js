@@ -6,14 +6,14 @@ import { config } from '../../config.js'
 import { getDynamoClient } from '../dynamo-client.js'
 
 /**
- * Sample uploads from the Upload Table
+ * Get uploads for a specific space from the Upload Table
  * 
  * @param {object} options
- * @param {number} options.limit - Maximum number of uploads to return
- * @param {string} [options.space] - Filter by specific space DID
+ * @param {number} [options.limit] - Maximum number of uploads to return (default: Infinity)
+ * @param {string} options.space - Space DID to get uploads for
  * @returns {AsyncGenerator<{space: string, root: string, shards: string[], insertedAt: string, updatedAt: string}>}
  */
-export async function* sampleUploads({ limit, space }) {
+export async function* getUploadsForSpace({ limit = Infinity, space }) {
   const client = getDynamoClient()
   let count = 0
   /** @type {Record<string, any> | undefined} */

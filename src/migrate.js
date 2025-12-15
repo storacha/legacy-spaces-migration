@@ -44,7 +44,7 @@ dotenv.config()
 import { parseArgs } from 'node:util'
 import { readFile } from 'fs/promises'
 import { validateConfig, config } from './config.js'
-import { sampleUploads } from './lib/tables/upload-table.js'
+import { getUploadsForSpace } from './lib/tables/upload-table.js'
 import {
   checkMigrationNeeded,
   buildAndMigrateIndex,
@@ -700,7 +700,7 @@ async function runMigrationMode(values) {
           /** @type {Record<string, number>} */
           const spaceFailureSummary = {}
           
-          for await (const upload of sampleUploads({
+          for await (const upload of getUploadsForSpace({
             limit: limit,
             space: space,
           })) {
@@ -849,7 +849,7 @@ async function runMigrationMode(values) {
           /** @type {Record<string, number>} */
           const spaceFailureSummary = {}
           
-          for await (const upload of sampleUploads({
+          for await (const upload of getUploadsForSpace({
             limit: limit,
             space: space,
           })) {
