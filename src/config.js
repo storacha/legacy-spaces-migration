@@ -30,9 +30,12 @@ import * as Proof from '@storacha/client/proof'
  *  piriServiceDID: string,
  *  piriServiceURL: string,
  *  piriPeerID: string,
+ *  storePiriPeerID: string,
  *  storageProviders: string[],
- *  ipniPublishingBucket: string,
- *  ipniPublishingQueue: string,
+ *  ipniBlobPublishingBucket: string,
+ *  ipniStorePublishingBucket: string,
+ *  ipniBlobPublishingQueue: string,
+ *  ipniStorePublishingQueue: string,
  * }>}
  */
 const ENVIRONMENTS = {
@@ -44,7 +47,8 @@ const ENVIRONMENTS = {
     claimsBucket: 'prod-storage-claim-store-bucket',
     indexingServiceURL: 'https://indexer.storacha.network',
     indexingServiceDID: 'did:web:indexer.storacha.network',
-    indexWorkerURL: 'https://index-worker-carpark-production.protocol-labs.workers.dev',
+    indexWorkerURL:
+      'https://index-worker-carpark-production.protocol-labs.workers.dev',
     contentClaimsURL: 'https://claims.web3.storage',
     claimsServiceDID: 'did:web:claims.web3.storage',
     uploadServiceURL: 'https://up.storacha.network',
@@ -54,10 +58,14 @@ const ENVIRONMENTS = {
     piriServiceDID: 'did:web:storage.storacha.network',
     piriServiceURL: 'https://storage.storacha.network',
     piriPeerID: '12D3KooWLiYS7k5GnBcngSRHemu98HQ1yqzJdYQcqqa2kpDDX9hf',
+    storePiriPeerID: '12D3KooWRtp2RJzFqWxUa2nrHbuEBuAEJMy7XNdnehB32PyL3dJQ',
     storageProviders: ['did:web:up.storacha.network', 'did:web:web3.storage'],
-    ipniPublishingBucket: 'prod-storage-ipni-publisher',
-    ipniPublishingQueue:
+    ipniBlobPublishingBucket: 'prod-storage-ipni-publisher',
+    ipniStorePublishingBucket: 'store-protocol-storage-ipni-publisher',
+    ipniBlobPublishingQueue:
       'https://sqs.us-west-2.amazonaws.com/505595374361/prod-storage-ipni-publisher.fifo',
+    ipniStorePublishingQueue:
+      'https://sqs.us-west-2.amazonaws.com/505595374361/store-protocol-storage-ipni-publisher.fifo',
   },
   staging: {
     region: 'us-east-2',
@@ -67,7 +75,8 @@ const ENVIRONMENTS = {
     claimsBucket: 'staging-storage-claim-store-bucket',
     indexingServiceURL: 'https://staging.indexer.storacha.network',
     indexingServiceDID: 'did:web:staging.indexer.storacha.network',
-    indexWorkerURL: 'https://index-worker-carpark-staging.protocol-labs.workers.dev',
+    indexWorkerURL:
+      'https://index-worker-carpark-staging.protocol-labs.workers.dev',
     contentClaimsURL: 'https://staging.claims.web3.storage',
     claimsServiceDID: 'did:web:staging.claims.web3.storage',
     uploadServiceURL: 'https://staging.up.storacha.network',
@@ -77,14 +86,17 @@ const ENVIRONMENTS = {
     piriServiceDID: 'did:web:staging.storage.storacha.network',
     piriServiceURL: 'https://staging.storage.storacha.network',
     piriPeerID: '12D3KooWPMQTKSMA3eFUxc23gBfMHEgzfk7W1TBezKNsBwPMRLQ7',
-
+    storePiriPeerID: '12D3KooWBvQHQbfyBdpmvugFoVL6SU2t7FZMwAyU3Xv6fEEPVVUp',
     storageProviders: [
       'did:web:staging.web3.storage',
       'did:web:staging.up.storacha.network',
     ],
-    ipniPublishingBucket: 'staging-storage-ipni-publisher',
-    ipniPublishingQueue:
+    ipniBlobPublishingBucket: 'staging-storage-ipni-publisher',
+    ipniStorePublishingBucket: 'store-protocol-staging-storage-ipni-publisher',
+    ipniBlobPublishingQueue:
       'https://sqs.us-east-2.amazonaws.com/505595374361/staging-storage-ipni-publisher.fifo',
+    ipniStorePublishingQueue:
+      'https://sqs.us-east-2.amazonaws.com/505595374361/store-protocol-staging-storage-ipni-publisher.fifo',
   },
 }
 
@@ -140,6 +152,9 @@ export const config = {
 
   addresses: {
     peerID: peerIdFromString(process.env.PIRI_PEER_ID || env.piriPeerID),
+    storePeerID: peerIdFromString(
+      process.env.STORE_PIRI_PEER_ID || env.storePiriPeerID
+    ),
     blobProtocolBlobAddr: createMultiAddr(
       process.env.BLOB_CARPARK_PUBLIC_URL || env.carparkPublicUrl,
       '{blob}/{blob}.blob'
@@ -155,7 +170,8 @@ export const config = {
   },
 
   services: {
-    indexingServiceURL: process.env.INDEXING_SERVICE_URL || env.indexingServiceURL,
+    indexingServiceURL:
+      process.env.INDEXING_SERVICE_URL || env.indexingServiceURL,
     indexingServiceDID:
       process.env.INDEXING_SERVICE_DID || env.indexingServiceDID,
     indexWorkerURL: process.env.INDEX_WORKER_URL || env.indexWorkerURL,
@@ -172,8 +188,10 @@ export const config = {
   },
 
   queues: {
-    ipniPublishingQueue:
-      process.env.IPNI_PUBLISHING_QUEUE || env.ipniPublishingQueue,
+    ipniBlobPublishingQueue:
+      process.env.IPNI_BLOB_PUBLISHING_QUEUE || env.ipniBlobPublishingQueue,
+    ipniStorePublishingQueue:
+      process.env.IPNI_STORE_PUBLISHING_QUEUE || env.ipniStorePublishingQueue,
   },
 
   storage: {
@@ -190,8 +208,10 @@ export const config = {
     r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
     r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     r2Region: process.env.R2_REGION || 'auto',
-    ipniPublishingBucket:
-      process.env.IPNI_PUBLISHING_BUCKET || env.ipniPublishingBucket,
+    ipniStorePublishingBucket:
+      process.env.IPNI_STORE_PUBLISHING_BUCKET || env.ipniStorePublishingBucket,
+    ipniBlobPublishingBucket:
+      process.env.IPNI_BLOB_PUBLISHING_BUCKET || env.ipniBlobPublishingBucket,
   },
 
   migration: {
@@ -240,19 +260,22 @@ function createMultiAddr(baseUrl, path) {
   const host = url.hostname
   const port = url.port || (url.protocol === 'https:' ? '443' : '80')
   const protocol = url.protocol === 'https:' ? 'tls' : ''
-  
+
   // Encode the path component once - this will turn {blob} into %7Bblob%7D
-  const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('%2F')
-  
+  const encodedPath = path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('%2F')
+
   // Build multiaddr string manually
   const parts = [
     `/dns/${host}`,
     `/tcp/${port}`,
     protocol ? `/${protocol}` : '',
     '/http',
-    `/http-path/${encodedPath}`
+    `/http-path/${encodedPath}`,
   ].filter(Boolean)
-  
+
   const multiAddrString = parts.join('')
   const addr = multiaddr(multiAddrString)
   return addr
@@ -266,9 +289,7 @@ export function validateConfig() {
     ['UPLOAD_TABLE_NAME', config.tables.upload],
   ]
 
-  const missing = required
-    .filter(([, value]) => !value)
-    .map(([name]) => name)
+  const missing = required.filter(([, value]) => !value).map(([name]) => name)
 
   if (missing.length > 0) {
     throw new Error(
@@ -312,7 +333,7 @@ export async function getUploadServiceSigner() {
 /**
  * Get the migration signer with the correct did:web identity
  * Key: did:key:z6MkmjS2fNbyMz9NviLJ9owtSQK5569EbjvLRbFFim9NLLar
- * 
+ *
  * @returns {Promise<import('@ucanto/interface').Signer>}
  */
 export async function getMigrationSigner() {
@@ -320,7 +341,9 @@ export async function getMigrationSigner() {
     throw new Error('MIGRATION_AGENT_PRIVATE_KEY not configured')
   }
 
-  const migrationKeyPair = Signer.parse(config.credentials.migrationAgentPrivateKey)
+  const migrationKeyPair = Signer.parse(
+    config.credentials.migrationAgentPrivateKey
+  )
   return migrationKeyPair
 }
 
@@ -350,7 +373,7 @@ export async function getIndexingServiceProof() {
   }
 
   const delegation = await Proof.parse(config.credentials.indexingServiceProof)
-  
+
   // Type casting to match expected return type if needed, though Proof.parse returns a Delegation
   return /** @type {import('@ucanto/interface').Delegation} */ (delegation)
 }
