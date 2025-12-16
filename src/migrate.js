@@ -818,7 +818,8 @@ async function runMigrationMode(values) {
             customer = await getCustomerForSpace(space)
           }
           
-          if (customer) {
+          // Skip migration status lookup in verify-only mode - we want to actually verify
+          if (customer && !verifyOnly) {
             try {
               // Check if space is already completed
               const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customer, space))
