@@ -146,24 +146,37 @@ export async function batchAssignCustomers(customers) {
 }
 
 /**
- * Mark customer as in-progress
+ * Mark customer as in-progress (creates record if it doesn't exist)
  * 
  * @param {string} customer - Customer DID
+ * @param {object} [options] - Optional parameters for new records
+ * @param {number} [options.totalSpaces] - Total spaces for customer
+ * @param {number} [options.totalUploads] - Total uploads for customer
  * @returns {Promise<void>}
  */
-export async function markCustomerInProgress(customer) {
+export async function markCustomerInProgress(customer, options = {}) {
   const client = getDynamoClient()
+  const now = new Date().toISOString()
   
+  // Use UpdateCommand with attribute_not_exists to handle both create and update
   const command = new UpdateCommand({
     TableName: CUSTOMERS_TABLE,
     Key: { customer },
-    UpdateExpression: 'SET #status = :status, updatedAt = :now',
+    UpdateExpression: `SET #status = :status, updatedAt = :now, 
+      assignedAt = if_not_exists(assignedAt, :now),
+      totalSpaces = if_not_exists(totalSpaces, :totalSpaces),
+      completedSpaces = if_not_exists(completedSpaces, :zero),
+      totalUploads = if_not_exists(totalUploads, :totalUploads),
+      completedUploads = if_not_exists(completedUploads, :zero)`,
     ExpressionAttributeNames: {
       '#status': 'status',
     },
     ExpressionAttributeValues: {
       ':status': 'in-progress',
-      ':now': new Date().toISOString(),
+      ':now': now,
+      ':totalSpaces': options.totalSpaces || 0,
+      ':totalUploads': options.totalUploads || 0,
+      ':zero': 0,
     },
   })
   

@@ -643,6 +643,9 @@ async function runMigrationMode(values) {
       console.log(`Processing ${customers.length} customer(s)...`)
       
       for (const customerDID of customers) {
+        // Get spaces for this customer first (needed for tracking)
+        const customerSpaces = await getSpacesForCustomer(customerDID)
+        
         // Check if customer is already completed in DynamoDB
         try {
           const customerStatus = await getCustomerStatus(customerDID)
@@ -651,16 +654,15 @@ async function runMigrationMode(values) {
             continue
           }
           
-          // Mark customer as in-progress
+          // Mark customer as in-progress (creates record if it doesn't exist)
           if (!verifyOnly && !testMode) {
-            await markCustomerInProgress(customerDID)
+            await markCustomerInProgress(customerDID, {
+              totalSpaces: customerSpaces.length,
+            })
           }
         } catch (err) {
           console.warn(`Failed to check/update customer status for ${customerDID}:`, getErrorMessage(err))
         }
-        
-        // Get spaces for this customer
-        const customerSpaces = await getSpacesForCustomer(customerDID)
         console.log(`\nCustomer ${customerDID}: ${customerSpaces.length} spaces`)
         
         let customerCompletedSpaces = 0
