@@ -223,13 +223,15 @@ export async function markCustomerCompleted(customer) {
   const command = new UpdateCommand({
     TableName: CUSTOMERS_TABLE,
     Key: { customer },
-    UpdateExpression: 'SET #status = :status, updatedAt = :now, completedAt = :now',
+    UpdateExpression: 'SET #status = :status, updatedAt = :now, completedAt = :now, #error = :empty',
     ExpressionAttributeNames: {
       '#status': 'status',
+      '#error': 'error',
     },
     ExpressionAttributeValues: {
       ':status': 'completed',
       ':now': now,
+      ':empty': '',
     },
   })
   

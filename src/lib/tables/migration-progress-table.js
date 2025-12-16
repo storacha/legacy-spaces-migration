@@ -146,13 +146,15 @@ export async function markSpaceCompleted(customer, space) {
   const command = new UpdateCommand({
     TableName: PROGRESS_TABLE,
     Key: { customer, space },
-    UpdateExpression: 'SET #status = :status, updatedAt = :now',
+    UpdateExpression: 'SET #status = :status, updatedAt = :now, #error = :empty',
     ExpressionAttributeNames: {
       '#status': 'status',
+      '#error': 'error',
     },
     ExpressionAttributeValues: {
       ':status': 'completed',
       ':now': new Date().toISOString(),
+      ':empty': '',
     },
   })
   
