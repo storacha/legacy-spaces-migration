@@ -24,7 +24,8 @@
  *   node src/setup-distribution.js --instances 5 --workers-per-instance 15
  */
 import dotenv from 'dotenv'
-dotenv.config()
+const envFile = process.env.STORACHA_ENV === 'production' ? '.env-production' : '.env-staging'
+dotenv.config({ path: envFile, override: true })
 import { parseArgs } from 'node:util'
 import { ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { validateConfig, config } from './config.js'

@@ -10,7 +10,7 @@ import { getDynamoClient } from '../dynamo-client.js'
  * 
  * @param {object} options
  * @param {number} [options.limit] - Maximum number of uploads to return (default: Infinity)
- * @param {string} options.space - Space DID to get uploads for
+ * @param {string} [options.space] - Space DID to get uploads for (optional, scans all if not provided)
  * @returns {AsyncGenerator<{space: string, root: string, shards: string[], insertedAt: string, updatedAt: string}>}
  */
 export async function* getUploadsForSpace({ limit = Infinity, space }) {

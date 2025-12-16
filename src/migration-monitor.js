@@ -14,7 +14,8 @@
  */
 
 import dotenv from 'dotenv'
-dotenv.config()
+const envFile = process.env.STORACHA_ENV === 'production' ? '.env-production' : '.env-staging'
+dotenv.config({ path: envFile, override: true })
 import { parseArgs } from 'node:util'
 import { validateConfig, config } from './config.js'
 import {
@@ -28,8 +29,28 @@ import {
 
 /**
  * Get overall migration statistics
+ * 
+ * @returns {Promise<{
+ *   total: number,
+ *   pending: number,
+ *   inProgress: number,
+ *   completed: number,
+ *   failed: number,
+ *   totalUploads: number,
+ *   completedUploads: number,
+ *   byInstance: Record<string, {total: number, completed: number, failed: number, uploads: number, completedUploads: number}>
+ * }>}
  */
 async function getOverallStats() {
+  /** @type {Record<string, any> | undefined} */
+  let lastEvaluatedKey
+
+  /** @type {{total: number, completed: number, failed: number, uploads: number, completedUploads: number}} */
+  const instanceStatsTemplate = { total: 0, completed: 0, failed: 0, uploads: 0, completedUploads: 0 }
+  
+  /** @type {Record<string, typeof instanceStatsTemplate>} */
+  const byInstance = {}
+  
   const stats = {
     total: 0,
     pending: 0,
@@ -38,10 +59,8 @@ async function getOverallStats() {
     failed: 0,
     totalUploads: 0,
     completedUploads: 0,
-    byInstance: {},
+    byInstance,
   }
-
-  let lastEvaluatedKey = undefined
 
   do {
     const { items, lastEvaluatedKey: nextKey } = await scanAllProgress({ lastEvaluatedKey })
@@ -85,6 +104,17 @@ async function getOverallStats() {
 
 /**
  * Print overall statistics
+ * 
+ * @param {{
+ *   total: number,
+ *   pending: number,
+ *   inProgress: number,
+ *   completed: number,
+ *   failed: number,
+ *   totalUploads: number,
+ *   completedUploads: number,
+ *   byInstance: Record<string, {total: number, completed: number, failed: number, uploads: number, completedUploads: number}>
+ * }} stats
  */
 function printOverallStats(stats) {
   console.log()
@@ -132,6 +162,9 @@ function printOverallStats(stats) {
 
 /**
  * Print customer progress
+ * 
+ * @param {string} customer
+ * @param {Array<{space: string, status: string, totalUploads?: number, completedUploads?: number, instanceId?: string, workerId?: string, error?: string, updatedAt?: string}>} spaces
  */
 function printCustomerProgress(customer, spaces) {
   console.log()
@@ -165,13 +198,13 @@ function printCustomerProgress(customer, spaces) {
     const statusIcon = space.status === 'completed' ? '🟢' : 
                        space.status === 'in-progress' ? '🔵' :
                        space.status === 'failed' ? '🔴' : '🟡'
-    const uploadProgress = space.totalUploads > 0 ? 
-      ` (${space.completedUploads}/${space.totalUploads} uploads)` : ''
+    const uploadProgress = (space.totalUploads ?? 0) > 0 ? 
+      ` (${space.completedUploads ?? 0}/${space.totalUploads} uploads)` : ''
     
     console.log(`  ${statusIcon} ${space.space}${uploadProgress}`)
     if (space.status === 'in-progress') {
       console.log(`     Instance: ${space.instanceId}, Worker: ${space.workerId}`)
-      console.log(`     Updated: ${new Date(space.updatedAt).toLocaleString()}`)
+      console.log(`     Updated: ${space.updatedAt ? new Date(space.updatedAt).toLocaleString() : 'N/A'}`)
     }
     if (space.status === 'failed' && space.error) {
       console.log(`     Error: ${space.error}`)
@@ -187,6 +220,8 @@ function printCustomerProgress(customer, spaces) {
 
 /**
  * Print space status
+ * 
+ * @param {{space: string, customer: string, status: string, totalUploads?: number, completedUploads?: number, instanceId?: string, workerId?: string, createdAt: string, updatedAt: string, lastProcessedUpload?: string, error?: string} | null} space
  */
 function printSpaceStatus(space) {
   console.log()
@@ -234,6 +269,8 @@ function printSpaceStatus(space) {
 
 /**
  * Print failed migrations
+ * 
+ * @param {Array<{space: string, customer: string, instanceId?: string, workerId?: string, error?: string, updatedAt: string}>} failed
  */
 function printFailedMigrations(failed) {
   console.log()
@@ -266,6 +303,8 @@ function printFailedMigrations(failed) {
 
 /**
  * Print stuck migrations
+ * 
+ * @param {Array<{space: string, customer: string, instanceId?: string, workerId?: string, completedUploads?: number, totalUploads?: number, updatedAt: string}>} stuck
  */
 function printStuckMigrations(stuck) {
   console.log()
@@ -300,6 +339,9 @@ function printStuckMigrations(stuck) {
 
 /**
  * Print instance progress
+ * 
+ * @param {string} instanceId
+ * @param {Array<{space: string, status: string, totalUploads?: number, completedUploads?: number, workerId?: string}>} spaces
  */
 function printInstanceProgress(instanceId, spaces) {
   console.log()
@@ -331,6 +373,7 @@ function printInstanceProgress(instanceId, spaces) {
   console.log()
   
   // Group by worker
+  /** @type {Record<string, {total: number, completed: number, inProgress: number, failed: number}>} */
   const byWorker = {}
   for (const space of spaces) {
     if (space.workerId) {

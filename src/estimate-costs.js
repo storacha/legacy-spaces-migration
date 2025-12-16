@@ -11,10 +11,11 @@
  *   node src/estimate-costs.js --sample 500 --space did:key:z6Mk...
  */
 import dotenv from 'dotenv'
-dotenv.config()
+const envFile = process.env.STORACHA_ENV === 'production' ? '.env-production' : '.env-staging'
+dotenv.config({ path: envFile, override: true })
 import { parseArgs } from 'node:util'
 import { validateConfig } from './config.js'
-import { sampleUploads } from './lib/tables/upload-table.js'
+import { getUploadsForSpace } from './lib/tables/upload-table.js'
 import { getShardSize } from './lib/tables/shard-data-table.js'
 import { generateShardedIndex } from './lib/index-worker.js'
 import { getErrorMessage } from './lib/error-utils.js'
@@ -80,7 +81,7 @@ async function estimateCosts(sampleSize, spaceFilter, dryRun = false) {
   console.log('Sampling uploads...')
   console.log()
   
-  for await (const upload of sampleUploads({ limit: sampleSize, space: spaceFilter })) {
+  for await (const upload of getUploadsForSpace({ limit: sampleSize, space: spaceFilter })) {
     stats.totalUploads++
     
     const shardCount = upload.shards.length

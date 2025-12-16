@@ -40,7 +40,8 @@
  *   node src/migrate.js --verify-only --space did:key:z6Mk... --cid bafybeib...
  */
 import dotenv from 'dotenv'
-dotenv.config()
+const envFile = process.env.STORACHA_ENV === 'production' ? '.env-production' : '.env-staging'
+dotenv.config({ path: envFile, override: true })
 import { parseArgs } from 'node:util'
 import { readFile } from 'fs/promises'
 import { validateConfig, config } from './config.js'

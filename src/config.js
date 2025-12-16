@@ -2,7 +2,14 @@
  * Configuration for the legacy spaces migration tool
  */
 import dotenv from 'dotenv'
-dotenv.config()
+
+// Load environment-specific .env file based on STORACHA_ENV
+const envFile = process.env.STORACHA_ENV === 'production' 
+  ? '.env-production' 
+  : '.env-staging'
+
+console.log('Loading environment-specific .env file:', envFile)
+dotenv.config({ path: envFile, override: true })
 
 import * as Signer from '@ucanto/principal/ed25519'
 import { DID } from '@ucanto/core'
@@ -142,7 +149,9 @@ export const config = {
       `${process.env.STORACHA_ENV || 'production'}-content-claims-claims-v1`, // Content claims (location claims with space info)
     migrationSpaces:
       process.env.MIGRATION_SPACES_TABLE_NAME ||
-      `${process.env.STORACHA_ENV || 'prod'}-migration-spaces`, // Migration space tracking
+      `${
+        process.env.STORACHA_ENV === 'staging' ? 'staging' : 'prod'
+      }-migration-spaces`, // Migration space tracking
     migrationProgress:
       process.env.MIGRATION_PROGRESS_TABLE_NAME ||
       `${

@@ -38,7 +38,7 @@ const PROGRESS_TABLE = config.tables.migrationProgress
  * 
  * @param {string} customer - Customer DID
  * @param {string} space - Space DID
- * @returns {Promise<object | null>}
+ * @returns {Promise<{customer: string, space: string, status: string, totalUploads?: number, completedUploads?: number, lastProcessedUpload?: string, instanceId?: string, workerId?: string, error?: string, createdAt: string, updatedAt: string} | null>}
  */
 export async function getSpaceProgress(customer, space) {
   const client = getDynamoClient()
@@ -49,6 +49,7 @@ export async function getSpaceProgress(customer, space) {
   })
   
   const response = await client.send(command)
+  // @ts-expect-error - DynamoDB returns Record<string, any> but we know the shape
   return response.Item || null
 }
 
@@ -191,7 +192,7 @@ export async function markSpaceFailed(customer, space, error) {
  * Get all spaces for a customer
  * 
  * @param {string} customer - Customer DID
- * @returns {Promise<Array<object>>}
+ * @returns {Promise<Array<{customer: string, space: string, status: string, totalUploads?: number, completedUploads?: number, instanceId?: string, workerId?: string, error?: string, updatedAt?: string}>>}
  */
 export async function getCustomerSpaces(customer) {
   const client = getDynamoClient()
@@ -205,13 +206,14 @@ export async function getCustomerSpaces(customer) {
   })
   
   const response = await client.send(command)
+  // @ts-expect-error - DynamoDB returns Record<string, any>[] but we know the shape
   return response.Items || []
 }
 
 /**
  * Get failed migrations
  * 
- * @returns {Promise<Array<object>>}
+ * @returns {Promise<Array<{customer: string, space: string, status: string, instanceId?: string, workerId?: string, error?: string, updatedAt: string}>>}
  */
 export async function getFailedMigrations() {
   const client = getDynamoClient()
@@ -228,13 +230,14 @@ export async function getFailedMigrations() {
   })
   
   const response = await client.send(command)
+  // @ts-expect-error - DynamoDB returns Record<string, any>[] but we know the shape
   return response.Items || []
 }
 
 /**
  * Get stuck migrations (in-progress for >1 hour)
  * 
- * @returns {Promise<Array<object>>}
+ * @returns {Promise<Array<{customer: string, space: string, status: string, instanceId?: string, workerId?: string, completedUploads?: number, totalUploads?: number, updatedAt: string}>>}
  */
 export async function getStuckMigrations() {
   const client = getDynamoClient()
@@ -253,6 +256,7 @@ export async function getStuckMigrations() {
   })
   
   const response = await client.send(command)
+  // @ts-expect-error - DynamoDB returns Record<string, any>[] but we know the shape
   return response.Items || []
 }
 
@@ -260,7 +264,7 @@ export async function getStuckMigrations() {
  * Get spaces by instance
  * 
  * @param {string} instanceId - Instance ID
- * @returns {Promise<Array<object>>}
+ * @returns {Promise<Array<{customer: string, space: string, status: string, totalUploads?: number, completedUploads?: number, workerId?: string}>>}
  */
 export async function getInstanceSpaces(instanceId) {
   const client = getDynamoClient()
@@ -274,6 +278,7 @@ export async function getInstanceSpaces(instanceId) {
   })
   
   const response = await client.send(command)
+  // @ts-expect-error - DynamoDB returns Record<string, any>[] but we know the shape
   return response.Items || []
 }
 
@@ -281,8 +286,8 @@ export async function getInstanceSpaces(instanceId) {
  * Scan all progress records (for statistics)
  * 
  * @param {object} [options]
- * @param {object} [options.lastEvaluatedKey] - For pagination
- * @returns {Promise<{items: Array<object>, lastEvaluatedKey?: object}>}
+ * @param {Record<string, any>} [options.lastEvaluatedKey] - For pagination
+ * @returns {Promise<{items: Array<{customer: string, space: string, status: string, totalUploads?: number, completedUploads?: number, instanceId?: string, workerId?: string}>, lastEvaluatedKey?: Record<string, any>}>}
  */
 export async function scanAllProgress(options = {}) {
   const client = getDynamoClient()
@@ -295,6 +300,7 @@ export async function scanAllProgress(options = {}) {
   const response = await client.send(command)
   
   return {
+    // @ts-expect-error - DynamoDB returns Record<string, any>[] but we know the shape
     items: response.Items || [],
     lastEvaluatedKey: response.LastEvaluatedKey,
   }

@@ -6,7 +6,52 @@
  */
 
 import { SQSPublishingQueue } from '../ipni/sqsqueue.js'
+import { SQSClient } from '@aws-sdk/client-sqs'
+import { S3Client } from '@aws-sdk/client-s3'
 import { config } from '../../config.js'
+
+/** @type {SQSClient | null} */
+let sqsClient = null
+/** @type {S3Client | null} */
+let s3Client = null
+
+/**
+ * Get or create SQS client with correct region
+ * @returns {SQSClient}
+ */
+function getSQSClient() {
+  if (!sqsClient) {
+    sqsClient = new SQSClient({
+      region: config.aws.region,
+      credentials: config.aws.accessKeyId
+        ? {
+            accessKeyId: config.aws.accessKeyId,
+            secretAccessKey: config.aws.secretAccessKey || '',
+          }
+        : undefined,
+    })
+  }
+  return sqsClient
+}
+
+/**
+ * Get or create S3 client with correct region
+ * @returns {S3Client}
+ */
+function getS3Client() {
+  if (!s3Client) {
+    s3Client = new S3Client({
+      region: config.aws.region,
+      credentials: config.aws.accessKeyId
+        ? {
+            accessKeyId: config.aws.accessKeyId,
+            secretAccessKey: config.aws.secretAccessKey || '',
+          }
+        : undefined,
+    })
+  }
+  return s3Client
+}
 
 /** @type {SQSPublishingQueue | null} */
 let blobQueueInstance = null
@@ -37,6 +82,8 @@ export function getBlobPublishingQueue() {
     blobQueueInstance = new SQSPublishingQueue({
       queueUrl: config.queues.ipniBlobPublishingQueue,
       bucketName: config.storage.ipniBlobPublishingBucket,
+      sqsClient: getSQSClient(),
+      s3Client: getS3Client(),
     })
   }
   return blobQueueInstance
@@ -51,6 +98,8 @@ export function getStorePublishingQueue() {
     storeQueueInstance = new SQSPublishingQueue({
       queueUrl: config.queues.ipniStorePublishingQueue,
       bucketName: config.storage.ipniStorePublishingBucket,
+      sqsClient: getSQSClient(),
+      s3Client: getS3Client(),
     })
   }
   return storeQueueInstance
