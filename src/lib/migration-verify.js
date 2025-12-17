@@ -249,16 +249,34 @@ export async function verifyGatewayRetrieval({ rootCID, gatewayUrl }) {
 }
 
 /**
- * Get subdomain-style gateway URL for a CID
+ * Get gateway URL for a CID
+ * Uses path format for CIDv0 (base58btc is case-sensitive, subdomain format lowercases)
+ * Uses subdomain format for CIDv1
  * @param {string} gatewayUrl 
- * @param {string} cid 
+ * @param {string} cidStr 
  * @returns {string}
  */
-function getSubdomainGatewayUrl(gatewayUrl, cid) {
+function getSubdomainGatewayUrl(gatewayUrl, cidStr) {
     const url = new URL(gatewayUrl)
-    if (url.hostname === 'staging.w3s.link') {
-      return `https://${cid}.ipfs-staging.w3s.link`
+    
+    // CIDv0 starts with "Qm" and uses base58btc which is case-sensitive
+    // Subdomain format lowercases the CID, breaking CIDv0
+    // Use path format for CIDv0 to preserve case
+    const isCIDv0 = cidStr.startsWith('Qm')
+    
+    if (isCIDv0) {
+      // Use path format for CIDv0
+      if (url.hostname === 'staging.w3s.link') {
+        return `https://staging.w3s.link/ipfs/${cidStr}`
+      } else {
+        return `https://w3s.link/ipfs/${cidStr}`
+      }
     } else {
-      return `https://${cid}.ipfs.w3s.link`
+      // Use subdomain format for CIDv1
+      if (url.hostname === 'staging.w3s.link') {
+        return `https://${cidStr}.ipfs-staging.w3s.link`
+      } else {
+        return `https://${cidStr}.ipfs.w3s.link`
+      }
     }
 }
