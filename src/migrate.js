@@ -811,6 +811,17 @@ async function runMigrationMode(values) {
         customers,
       })
 
+      // Track customer in migration-customers table if --customer flag is used
+      if (values.customer && !verifyOnly && !testMode) {
+        try {
+          await markCustomerInProgress(values.customer, {
+            totalSpaces: targetSpaces?.length || 0,
+          })
+        } catch (err) {
+          console.warn(`Failed to track customer ${values.customer}:`, getErrorMessage(err))
+        }
+      }
+
       // Process uploads from target spaces
       if (targetSpaces && targetSpaces.length > 0) {
         // Iterate through each space to sample uploads based on the specified limit
@@ -916,6 +927,20 @@ async function runMigrationMode(values) {
           
           if (limit !== Infinity && processed >= limit) {
             break
+          }
+        }
+        
+        // Mark customer as completed or failed at the end of processing
+        if (values.customer && !verifyOnly && !testMode) {
+          try {
+            const hasFailed = spacesWithFailures.size > 0
+            if (hasFailed) {
+              await markCustomerFailed(values.customer, `${spacesWithFailures.size} space(s) with failures`)
+            } else {
+              await markCustomerCompleted(values.customer)
+            }
+          } catch (err) {
+            console.warn(`Failed to update customer completion status:`, getErrorMessage(err))
           }
         }
       } else {
