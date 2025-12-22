@@ -19,6 +19,11 @@ export function claimHasSpace(claim, expectedSpaceDID) {
     // Handle different space formats
     if (typeof claim.space === 'string') {
       return claim.space === expectedSpaceDID
+    } else if (claim.space instanceof Uint8Array) {
+      // Space is stored as raw bytes (multicodec-encoded public key)
+      // Convert to did:key string using base58btc encoding
+      const spaceDID = `did:key:${base58btc.encode(claim.space)}`
+      return spaceDID === expectedSpaceDID
     } else if (claim.space.did && typeof claim.space.did === 'function') {
       return claim.space.did() === expectedSpaceDID
     } else if (claim.space.did && typeof claim.space.did === 'string') {
