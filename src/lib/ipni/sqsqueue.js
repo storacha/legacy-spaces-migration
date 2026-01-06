@@ -98,8 +98,11 @@ export class SQSPublishingQueue {
    * @returns {Promise<{message: Object, extended: Uint8Array, groupId: string}>}
    */
   async _marshallJob(job) {
-    // Convert digests to JSON
-    const digestsJson = JSON.stringify(job.digests)
+    // Convert digests to array of byte arrays (raw multihash bytes)
+    // The Go Lambda expects: []mh.Multihash (array of byte arrays)
+    // Each digest.bytes is a Uint8Array containing the raw multihash
+    const digestsArray = job.digests.map(digest => Array.from(digest.bytes))
+    const digestsJson = JSON.stringify(digestsArray)
     const extended = new TextEncoder().encode(digestsJson)
 
     // Base64 encode the context ID for use as GroupID (FIFO queue ordering)
