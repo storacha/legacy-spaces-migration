@@ -1,4 +1,4 @@
-import { URI } from '@ucanto/core/schema'
+import { Absentee } from '@ucanto/principal'
 
 /**
  * Utility functions for managing migration spaces
@@ -98,7 +98,6 @@ import * as Link from 'multiformats/link'
 import { Space } from '@storacha/access'
 import { OwnedSpace } from '@storacha/access/space'
 import * as Signer from '@ucanto/principal/ed25519'
-import { Verifier } from '@ucanto/principal/ed25519'
 import { delegate } from '@ucanto/core'
 import { generateShardedIndex } from './index-worker.js'
 import { getShardInfo } from './tables/shard-data-table.js'
@@ -211,8 +210,13 @@ export async function delegateMigrationSpaceToCustomer({
   customer,
   cause,
 }) {
+  // Only delegate to did:mailto accounts (email-based accounts)
+  if (!customer.startsWith('did:mailto:')) {
+    throw new Error(`Cannot delegate to ${customer} - only did:mailto accounts are supported`)
+  }
+  
   // Create account principal (Absentee since we don't have their private key)
-  const customerAccount = Verifier.parse(customer)
+  const customerAccount = Absentee.from({ id: /** @type {`did:${string}:${string}`} */ (customer) })
   console.log(`    Creating Migration Space delegation for customer account: ${customerAccount.did()}`)
   
   // Delegate full space access from migration space to customer account
