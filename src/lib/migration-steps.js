@@ -190,6 +190,7 @@ export async function buildAndMigrateIndex({ upload }) {
   // Get the signer from the migration space
   const spaceSigner = migrationSpace.signer || migrationSpace
 
+  let indexBlobLocation
   try {
     // Upload the index blob to the migration space using SpaceBlob.add
     const blobAddResult = await SpaceBlob.add(
@@ -201,7 +202,6 @@ export async function buildAndMigrateIndex({ upload }) {
       },
       indexDigest,
       indexBytes,
-      // new Blob([indexBytes], { type: 'application/vnd.ipld.car' }),
       { connection }
     )
     if (!blobAddResult || !blobAddResult.site) {
@@ -209,6 +209,21 @@ export async function buildAndMigrateIndex({ upload }) {
     }
 
     console.log('    ✓ Index blob uploaded to migration space')
+    
+    // Extract the actual location URL from the upload response
+    // The site is a Delegation object, we need to access its capabilities
+    const siteCapabilities = blobAddResult.site.capabilities
+    const locationCapability = siteCapabilities.find(
+      (cap) => cap.can === 'assert/location'
+    )
+    
+    indexBlobLocation = locationCapability?.nb?.location?.[0]
+    
+    if (!indexBlobLocation) {
+      throw new Error('No location URL returned from blob upload')
+    }
+    
+    console.log(`    Index blob location: ${indexBlobLocation}`)
   } catch (error) {
     console.error('    ✗ Failed to upload index blob')
     throw new Error(`Failed to upload index blob: ${getErrorMessage(error)}`, {
@@ -220,13 +235,20 @@ export async function buildAndMigrateIndex({ upload }) {
   // The indexing service needs to fetch the index CAR, so it needs a location claim.
   // The index belongs to the migration space.
   console.log('    Publishing location claim for index CAR...')
+  
   try {
+    // For the newly uploaded index blob, we already have the location from the upload response
+    // Skip R2 verification since the upload service confirmed it was uploaded
     await republishLocationClaims({
       space: migrationSpace.did(),
       migrationSpace,
       root: indexCID.toString(),
       shards: [indexCID.toString()],
-      shardsWithSizes: [{ cid: indexCID.toString(), size: indexBytes.length }],
+      shardsWithSizes: [{ 
+        cid: indexCID.toString(), 
+        size: indexBytes.length,
+        location: indexBlobLocation // Pass the actual location from upload response
+      }],
     })
     console.log('    ✓ Index CAR location claim published')
   } catch (error) {
@@ -396,7 +418,7 @@ export async function registerIndex({ upload, indexCID }) {
  * @param {string[]} params.shards - Shard CIDs (CAR files) to republish
  * @param {string} params.root - Root CID (index CAR)
  * @param {import('@storacha/access').OwnedSpace} [params.migrationSpace] - Migration space DID
- * @param {Array<{cid: string, size: number, protocol?: 'blob'|'store'}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB)
+ * @param {Array<{cid: string, size: number, protocol?: 'blob'|'store', location?: string}> | null} [params.shardsWithSizes] - Optional shard info from previous step (avoids re-querying DynamoDB). If `location` is provided, it will be used directly instead of constructing the URL and verifying it exists in R2.
  * @returns {Promise<void>}
  */
 export async function republishLocationClaims({
@@ -447,7 +469,7 @@ export async function republishLocationClaims({
         const fetched = await getShardInfo(space, shardCID)
         info = { cid: shardCID, ...fetched }
       }
-      const { size, protocol = 'blob' } = info
+      const { size, protocol = 'blob', location: providedLocation } = info
 
       // Parse CID to get digest and codec
       const cid = CID.parse(shardCID)
@@ -457,23 +479,32 @@ export async function republishLocationClaims({
       let locationURI
       let providerAddrBytes
 
-      if (protocol === 'store') {
-        // Store Protocol (CAR files)
-        // URL format: {carpark}/{cid}/{cid}.car
-        locationURI = `${config.storage.carparkPublicUrl}/${shardCID}/${shardCID}.car`
-        providerAddrBytes = config.addresses.storeProtocolBlobAddr.bytes
-      } else {
-        // Blob Protocol (Raw blobs)
-        // URL format: {carpark}/{digest}/{digest}.blob
-        locationURI = `${config.storage.carparkPublicUrl}/${base58btc.encode(
-          digest.bytes
-        )}/${base58btc.encode(digest.bytes)}.blob`
+      // If location was provided (e.g., from upload response), use it directly
+      // This skips R2 verification for newly uploaded blobs
+      if (providedLocation) {
+        locationURI = providedLocation
         providerAddrBytes = config.addresses.blobProtocolBlobAddr.bytes
-      }
+        console.log(`    ✓ ${shardCID}: using provided location (newly uploaded index shard)`)
+      } else {
+        // Otherwise, construct the URL and verify it exists in R2
+        if (protocol === 'store') {
+          // Store Protocol (CAR files)
+          // URL format: {carpark}/{cid}/{cid}.car
+          locationURI = `${config.storage.carparkPublicUrl}/${shardCID}/${shardCID}.car`
+          providerAddrBytes = config.addresses.storeProtocolBlobAddr.bytes
+        } else {
+          // Blob Protocol (Raw blobs)
+          // URL format: {carpark}/{digest}/{digest}.blob
+          locationURI = `${config.storage.carparkPublicUrl}/${base58btc.encode(
+            digest.bytes
+          )}/${base58btc.encode(digest.bytes)}.blob`
+          providerAddrBytes = config.addresses.blobProtocolBlobAddr.bytes
+        }
 
-      const resourceCheck = await verifyResource(locationURI)
-      if (!resourceCheck.exists) {
-        throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found in R2 (${locationURI})`)
+        const resourceCheck = await verifyResource(locationURI)
+        if (!resourceCheck.exists) {
+          throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found in R2 (${locationURI})`)
+        }
       }
 
       const locResult = URI.read(locationURI)
