@@ -91,6 +91,12 @@ export const FAILURE_REASON = {
    * Check verification details for more information.
    */
   VERIFICATION_FAILED: 'VERIFICATION_FAILED',
+  
+  /** Upload has no shards in database and no index claim
+   * Cannot migrate because there's no way to determine what content to migrate.
+   * This indicates data corruption or incomplete upload.
+   */
+  NO_SHARDS_NO_INDEX: 'NO_SHARDS_NO_INDEX',
 }
 
 import { sha256 } from 'multiformats/hashes/sha2'

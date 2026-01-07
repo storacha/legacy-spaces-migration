@@ -222,9 +222,13 @@ async function migrateUpload(upload, options = {}) {
     } else {
       console.log(`   ✗ No index claim found`)
       console.log(`   ❌ Cannot migrate: upload has no shards and no index`)
-      throw new Error(
-        'Upload has no shards in database and no index claim - cannot migrate'
-      )
+      return {
+        success: false,
+        failureReason: FAILURE_REASON.NO_SHARDS_NO_INDEX,
+        error: 'Upload has no shards in database and no index claim - cannot migrate',
+        upload: upload.root,
+        space: upload.space,
+      }
     }
   }
 
