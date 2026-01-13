@@ -42,6 +42,21 @@ export async function queryIndexingService(contentCID) {
     })
 
     if (result.error) {
+      const errorString = String(result.error)
+      const errorMessage = result.error instanceof Error ? result.error.message : errorString
+      
+      // Check if this is a 500 error - these uploads cannot be processed by the indexing service
+      if (errorString.includes('status: 500') || errorMessage.includes('status: 500')) {
+        // Throw a specific error that can be caught and handled
+        const indexingError = /** @type {Error & { code: string, originalError: unknown }} */ (
+          new Error(`INDEXING_SERVICE_500: ${errorMessage}`)
+        )
+        indexingError.code = 'INDEXING_SERVICE_500'
+        indexingError.originalError = result.error
+        throw indexingError
+      }
+      
+      // For other errors, log and return defaults (migration will proceed)
       console.warn(
         `Error querying indexing service for ${contentCID}:`,
         result.error
@@ -84,6 +99,25 @@ export async function queryIndexingService(contentCID) {
       indexes, // Include the parsed ShardedDAGIndex structures
     }
   } catch (error) {
+    // Check if this is ANY 500 error from the indexing service
+    // This includes both provider address issues and index fetching failures
+    const errorString = String(error)
+    const errorMessage = error instanceof Error ? error.message : errorString
+    
+    // Check for 500 errors - these indicate the indexing service cannot process this upload
+    if (errorString.includes('status: 500') || errorMessage.includes('status: 500')) {
+      console.log(`\n  ⚠️  Indexing service returned 500 error`)
+      console.log(`  ⏭  Skipping this upload - will be tracked in error counter`)
+      // Throw a specific error that can be caught and handled
+      const indexingError = /** @type {Error & { code: string, originalError: unknown }} */ (
+        new Error(`INDEXING_SERVICE_500: ${errorMessage}`)
+      )
+      indexingError.code = 'INDEXING_SERVICE_500'
+      indexingError.originalError = error
+      throw indexingError
+    }
+    
+    // For other errors, log and return defaults (migration will proceed)
     console.error(`Error querying indexing service for ${contentCID}:`, error)
     console.warn(`  ⚠️  Migration will proceed - Step 2 will republish location claims with correct provider metadata`)
     return {

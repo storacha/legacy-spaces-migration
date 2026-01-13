@@ -271,7 +271,26 @@ async function migrateUpload(upload, options = {}) {
     // Step 1: Check what migration steps are needed
     currentStep = STEP.ANALYZE
     console.log(`\nSTEP 1: Analyze Migration Status ${'─'.repeat(35)}`)
-    const status = await checkMigrationNeeded(upload)
+    
+    let status
+    try {
+      status = await checkMigrationNeeded(upload)
+    } catch (error) {
+      // Check if this is an indexing service 500 error
+      const err = /** @type {Error & { code?: string }} */ (error)
+      if (err.code === 'INDEXING_SERVICE_500') {
+        return {
+          success: false,
+          failureReason: FAILURE_REASON.INDEXING_SERVICE_500,
+          error: err.message,
+          upload: upload.root,
+          space: upload.space,
+          skipped: true,
+        }
+      }
+      // Re-throw other errors
+      throw error
+    }
 
     console.log(
       `  Index claim:           ${

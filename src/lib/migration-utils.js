@@ -97,6 +97,13 @@ export const FAILURE_REASON = {
    * This indicates data corruption or incomplete upload.
    */
   NO_SHARDS_NO_INDEX: 'NO_SHARDS_NO_INDEX',
+  
+  /** Indexing service returned 500 error during analysis
+   * The indexing service failed to process the query, likely due to incomplete
+   * provider addresses in legacy location claims (missing {blob} or {blobCID} endpoint).
+   * Upload is skipped to avoid migration failures.
+   */
+  INDEXING_SERVICE_500: 'INDEXING_SERVICE_500',
 }
 
 import { sha256 } from 'multiformats/hashes/sha2'
