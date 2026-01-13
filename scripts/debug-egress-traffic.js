@@ -4,7 +4,9 @@
  * Debug script to analyze egress traffic events from prod-w3infra-egress-traffic-events table
  * 
  * Usage:
- *   node debug-egress-traffic.js
+ *   node debug-egress-traffic.js [limit]
+ *   node debug-egress-traffic.js [limit] --from YYYY-MM-DD --to YYYY-MM-DD
+ *   node debug-egress-traffic.js 100000 --from 2026-01-01 --to 2026-01-15
  * 
  * Environment variables required:
  *   AWS_ACCESS_KEY_ID
@@ -16,7 +18,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient, ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import dotenv from 'dotenv'
 
-dotenv.config()
+const envFile = process.env.STORACHA_ENV === 'production' ? '.env-production' : '.env-staging'
+dotenv.config({ path: envFile, override: true })
 
 const EGRESS_TABLE_NAME = 'prod-w3infra-egress-traffic-events'
 const CUSTOMER_TABLE_NAME = 'prod-w3infra-customer'
@@ -27,43 +30,96 @@ const dynamoClient = new DynamoDBClient({ region: REGION })
 const docClient = DynamoDBDocumentClient.from(dynamoClient)
 
 /**
- * Scan the egress traffic events table
+ * Scan the egress traffic events table with optional date range filtering
+ * Uses the customer GSI to query efficiently when date range is specified
  * @param {number} limit - Maximum number of items to scan (optional)
+ * @param {string | null} fromDate - Start date (YYYY-MM-DD)
+ * @param {string | null} toDate - End date (YYYY-MM-DD)
  */
-async function scanEgressTraffic(limit = 10000) {
-  console.log(`Scanning ${EGRESS_TABLE_NAME}...`)
+async function scanEgressTraffic(limit = 10000, fromDate = null, toDate = null) {
+  console.log(`Querying ${EGRESS_TABLE_NAME}...`)
   console.log(`Region: ${REGION}`)
-  console.log(`Limit: ${limit} items\n`)
+  console.log(`Limit: ${limit} items`)
+  if (fromDate || toDate) {
+    console.log(`Date range: ${fromDate || 'beginning'} to ${toDate || 'now'}`)
+  }
+  console.log()
 
   const events = []
   let lastEvaluatedKey = undefined
   let scanCount = 0
 
   try {
-    do {
-      const command = new ScanCommand({
-        TableName: EGRESS_TABLE_NAME,
-        Limit: Math.min(1000, limit - events.length),
-        ExclusiveStartKey: lastEvaluatedKey
-      })
+    // If no date filter, use regular scan
+    if (!fromDate && !toDate) {
+      do {
+        const command = new ScanCommand({
+          TableName: EGRESS_TABLE_NAME,
+          Limit: Math.min(1000, limit - events.length),
+          ExclusiveStartKey: lastEvaluatedKey
+        })
 
-      const response = await docClient.send(command)
-      
-      if (response.Items) {
-        events.push(...response.Items)
-        scanCount++
-        console.log(`Scanned ${events.length} items so far...`)
-      }
+        const response = await docClient.send(command)
+        
+        if (response.Items) {
+          events.push(...response.Items)
+          scanCount++
+          console.log(`Scanned ${events.length} items so far...`)
+        }
 
-      lastEvaluatedKey = response.LastEvaluatedKey
+        lastEvaluatedKey = response.LastEvaluatedKey
 
-      // Stop if we've reached the limit
-      if (events.length >= limit) {
-        break
-      }
-    } while (lastEvaluatedKey)
+        if (events.length >= limit) {
+          break
+        }
+      } while (lastEvaluatedKey)
+    } else {
+      // Use scan with filter expression for date range
+      // The sk format is: "2026-01-11T03:55:33.278Z#<cid>"
+      const fromTimestamp = fromDate ? `${fromDate}T00:00:00.000Z` : null
+      const toTimestamp = toDate ? `${toDate}T23:59:59.999Z` : null
 
-    console.log(`\nTotal items scanned: ${events.length}`)
+      do {
+        let filterExpression = ''
+        const expressionAttributeValues = {}
+
+        if (fromTimestamp && toTimestamp) {
+          filterExpression = 'sk BETWEEN :from AND :to'
+          expressionAttributeValues[':from'] = fromTimestamp
+          expressionAttributeValues[':to'] = toTimestamp + '#~' // Add suffix for range
+        } else if (fromTimestamp) {
+          filterExpression = 'sk >= :from'
+          expressionAttributeValues[':from'] = fromTimestamp
+        } else if (toTimestamp) {
+          filterExpression = 'sk <= :to'
+          expressionAttributeValues[':to'] = toTimestamp + '#~'
+        }
+
+        const command = new ScanCommand({
+          TableName: EGRESS_TABLE_NAME,
+          FilterExpression: filterExpression,
+          ExpressionAttributeValues: expressionAttributeValues,
+          Limit: 1000,
+          ExclusiveStartKey: lastEvaluatedKey
+        })
+
+        const response = await docClient.send(command)
+        
+        if (response.Items) {
+          events.push(...response.Items)
+          scanCount++
+          console.log(`Scanned ${events.length} items so far (${response.ScannedCount} scanned in this batch)...`)
+        }
+
+        lastEvaluatedKey = response.LastEvaluatedKey
+
+        if (events.length >= limit) {
+          break
+        }
+      } while (lastEvaluatedKey)
+    }
+
+    console.log(`\nTotal items retrieved: ${events.length}`)
     console.log(`Scan operations: ${scanCount}\n`)
 
     return events
@@ -362,6 +418,35 @@ async function analyzeEgressTraffic(events) {
   console.log()
 }
 
+/**
+ * Parse command line arguments
+ * @returns {{limit: number, fromDate: string | null, toDate: string | null}}
+ */
+function parseArgs() {
+  const args = process.argv.slice(2)
+  let limit = 10000
+  let fromDate = null
+  let toDate = null
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) {
+      fromDate = args[i + 1]
+      i++
+    } else if (args[i] === '--to' && args[i + 1]) {
+      toDate = args[i + 1]
+      i++
+    } else if (!args[i].startsWith('--')) {
+      const parsed = parseInt(args[i])
+      if (!isNaN(parsed)) {
+        limit = parsed
+      }
+    }
+  }
+
+  return { limit, fromDate, toDate }
+}
+
+
 // Main execution
 async function main() {
   try {
@@ -372,11 +457,11 @@ async function main() {
       process.exit(1)
     }
 
-    // Get limit from command line args or use default
-    const limit = parseInt(process.argv[2]) || 10000
+    // Parse command line arguments
+    const { limit, fromDate, toDate } = parseArgs()
 
-    // Scan the table
-    const events = await scanEgressTraffic(limit)
+    // Scan the table with date range filtering
+    const events = await scanEgressTraffic(limit, fromDate, toDate)
 
     if (events.length === 0) {
       console.log('No events found in the table')
