@@ -77,7 +77,8 @@ async function main() {
   const migrateArgs = [
     'src/migrate.js',
     '--customers-file', tempFile,
-    '--concurrency', concurrency
+    '--concurrency', concurrency,
+    '--instance-id', instanceId
   ]
   
   if (verifyOnly) {
