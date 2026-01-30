@@ -191,44 +191,62 @@ async function migrateUpload(upload, options = {}) {
     const { queryIndexingService } = await import('./lib/indexing-service.js')
     const { CID } = await import('multiformats/cid')
 
-    const indexingData = await queryIndexingService(upload.root)
+    try {
+      const indexingData = await queryIndexingService(upload.root)
 
-    if (indexingData.hasIndexClaim) {
-      console.log(`   ✓ Index claim exists`)
-      console.log(`   Extracting original content shards from index...`)
+      if (indexingData.hasIndexClaim) {
+        console.log(`   ✓ Index claim exists`)
+        console.log(`   Extracting original content shards from index...`)
 
-      // Get the index from the query result
-      const indexes = Array.from(indexingData.indexes.values() || [])
+        // Get the index from the query result
+        const indexes = Array.from(indexingData.indexes.values() || [])
 
-      if (indexes.length === 0) {
-        console.log(`   ✗ No index data returned`)
-        console.log(`   ⏭  Skipping shard resolution`)
+        if (indexes.length === 0) {
+          console.log(`   ✗ No index data returned`)
+          console.log(`   ⏭  Skipping shard resolution`)
+        } else {
+          // Extract shard digests from the index
+          const index = indexes[0]
+          const shardDigests = Array.from(index.shards.keys())
+
+          // Convert digests to CIDs
+          const shardCIDs = shardDigests.map((digest) => {
+            // Shards are stored as multihashes in the index
+            return CID.createV1(0x55, digest).toString()
+          })
+
+          upload.shards = shardCIDs
+          console.log(
+            `   ✓ Extracted ${shardCIDs.length} original content shard(s) from index`
+          )
+        }
       } else {
-        // Extract shard digests from the index
-        const index = indexes[0]
-        const shardDigests = Array.from(index.shards.keys())
-
-        // Convert digests to CIDs
-        const shardCIDs = shardDigests.map((digest) => {
-          // Shards are stored as multihashes in the index
-          return CID.createV1(0x55, digest).toString()
-        })
-
-        upload.shards = shardCIDs
-        console.log(
-          `   ✓ Extracted ${shardCIDs.length} original content shard(s) from index`
-        )
+        console.log(`   ✗ No index claim found`)
+        console.log(`   ❌ Cannot migrate: upload has no shards and no index`)
+        return {
+          success: false,
+          failureReason: FAILURE_REASON.NO_SHARDS_NO_INDEX,
+          error: 'Upload has no shards in database and no index claim - cannot migrate',
+          upload: upload.root,
+          space: upload.space,
+        }
       }
-    } else {
-      console.log(`   ✗ No index claim found`)
-      console.log(`   ❌ Cannot migrate: upload has no shards and no index`)
-      return {
-        success: false,
-        failureReason: FAILURE_REASON.NO_SHARDS_NO_INDEX,
-        error: 'Upload has no shards in database and no index claim - cannot migrate',
-        upload: upload.root,
-        space: upload.space,
+    } catch (error) {
+      // Handle indexing service 500 errors gracefully
+      const err = /** @type {any} */ (error)
+      if (err.code === 'INDEXING_SERVICE_500') {
+        console.log(`   ✗ Indexing service error (500)`)
+        console.log(`   ❌ Cannot migrate: indexing service cannot process this upload`)
+        return {
+          success: false,
+          failureReason: FAILURE_REASON.INDEXING_SERVICE_500,
+          error: `Indexing service error: ${err.message}`,
+          upload: upload.root,
+          space: upload.space,
+        }
       }
+      // Re-throw other errors
+      throw error
     }
   }
 
