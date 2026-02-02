@@ -580,6 +580,8 @@ export async function republishLocationClaims({
       }
 
       const claimCID = CID.parse(claim.link().toString())
+      console.log(`      ✓ Claim cached: ${claimCID}`)
+
       const meta = new LocationCommitmentMetadata({
         shard: cid,
         claim: claimCID,
