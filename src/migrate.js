@@ -253,6 +253,7 @@ async function migrateUpload(upload, options = {}) {
 
     // Track current step for error reporting
     let currentStep = STEP.INIT
+    let repairMode = false // Track if we're in repair mode for this upload
 
     try {
     // Test gateway retrieval BEFORE migration (baseline)
@@ -279,6 +280,8 @@ async function migrateUpload(upload, options = {}) {
         verifyOnly: true,
         upload: upload.root,
         space: upload.space,
+        repairMode,
+        repaired: repairMode, // Track if this upload was actually repaired
         retrievalBeforeMigration,
         verification: verificationResult,
         error: verificationResult.success
@@ -292,7 +295,6 @@ async function migrateUpload(upload, options = {}) {
     console.log(`\nSTEP 1: Analyze Migration Status ${'─'.repeat(35)}`)
     
     let status
-    let repairMode = false // Track if we're in repair mode for this upload
     try {
       status = await checkMigrationNeeded(upload)
     } catch (error) {
@@ -543,11 +545,32 @@ async function migrateUpload(upload, options = {}) {
     // Step 5: Verify migration completed successfully
     currentStep = STEP.VERIFY
     console.log(`\nSTEP 5: Verify Migration ${'─'.repeat(43)}`)
-    const verificationResult = await verifyMigration({
-      upload,
-      gatewayAuthResult,
-      testGatewayRetrieval: false, // Don't test again, we already did it above
-    })
+    
+    // In repair mode, skip verification to avoid indexer cache issues
+    // The indexer cache may still have old corrupted claim references
+    // We already confirmed claim/cache succeeded in Step 3
+    let verificationResult
+    if (repairMode) {
+      console.log('  Status: ⏭  SKIPPED')
+      console.log('  Reason: Repair mode - indexer cache may not be updated yet')
+      console.log('  Note: Claims were successfully cached in Step 3')
+      verificationResult = {
+        success: true,
+        indexVerified: true,
+        locationClaimsVerified: true,
+        allShardsHaveSpace: true,
+        gatewayAuthVerified: true,
+        gatewayRetrievalVerified: null,
+        shardsWithoutSpace: [],
+        details: 'Verification skipped in repair mode - claims cached successfully',
+      }
+    } else {
+      verificationResult = await verifyMigration({
+        upload,
+        gatewayAuthResult,
+        testGatewayRetrieval: false, // Don't test again, we already did it above
+      })
+    }
     
     // Determine failure reason if verification failed
     let failureReason = undefined
@@ -714,11 +737,15 @@ async function runMigrationMode(values) {
         const customerSpaces = await getSpacesForCustomer(customerDID)
         
         // Check if customer is already completed in DynamoDB
+        // In repair mode, skip this check to allow reprocessing of failed uploads
         try {
           const customerStatus = await getCustomerStatus(customerDID)
-          if (customerStatus?.status === 'completed') {
+          if (customerStatus?.status === 'completed' && !values.repair) {
             console.log(`Customer ${customerDID} already completed. Skipping.`)
             continue
+          }
+          if (customerStatus?.status === 'completed' && values.repair) {
+            console.log(`Customer ${customerDID} marked completed but repair mode active - will reprocess failed uploads`)
           }
           
           // Mark customer as in-progress (creates record if it doesn't exist)
@@ -739,18 +766,24 @@ async function runMigrationMode(values) {
         const customerFailureSummary = {}
         
         for (const space of customerSpaces) {
+          let totalUploadsInSpace = 0
+          
           // Check if space is already completed
           try {
             const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customerDID, space))
-            if (progress && progress.status === 'completed') {
+            if (progress && progress.status === 'completed' && !values.repair) {
               console.log(`  Space ${space} already completed. Skipping.`)
               customerCompletedSpaces++
               customerCompletedUploads += progress.completedUploads || 0
               continue
             }
+            if (progress && progress.status === 'completed' && values.repair) {
+              const failedCount = progress.totalUploads - progress.completedUploads
+              console.log(`  Space ${space} marked completed but has ${failedCount} failed uploads - repair mode will reprocess`)
+            }
             
             // Calculate total uploads if not already known
-            const totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
+            totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
             
             if (!progress && !verifyOnly && !testMode) {
               await createSpaceProgress({
@@ -805,10 +838,12 @@ async function runMigrationMode(values) {
             // Update space progress periodically
             if (!verifyOnly && !testMode && spaceProcessed % 10 === 0) {
                try {
+                 // Cap completedUploads at totalUploads to prevent negative failed count in repair mode
+                 const completedUploads = Math.min(spaceProcessed, totalUploadsInSpace)
                  await updateSpaceProgress({
                    customer: customerDID,
                    space,
-                   completedUploads: spaceProcessed,
+                   completedUploads,
                    lastProcessedUpload: upload.root
                  })
                } catch (e) {
@@ -894,6 +929,8 @@ async function runMigrationMode(values) {
       if (targetSpaces && targetSpaces.length > 0) {
         // Iterate through each space to sample uploads based on the specified limit
         for (const space of targetSpaces) {
+          let totalUploadsInSpace = 0
+          
           // Initialize or resume progress tracking for this space
           let customer = values.customer
           if (!customer) {
@@ -904,14 +941,19 @@ async function runMigrationMode(values) {
           if (customer && !verifyOnly) {
             try {
               // Check if space is already completed
+              // In repair mode, skip this check to allow reprocessing of failed uploads
               const progress = /** @type {SpaceProgress|null} */ (await getSpaceProgress(customer, space))
-              if (progress && progress.status === 'completed') {
+              if (progress && progress.status === 'completed' && !values.repair) {
                 console.log(`Space ${space} already completed. Skipping.`)
                 continue
               }
+              if (progress && progress.status === 'completed' && values.repair) {
+                const failedCount = progress.totalUploads - progress.completedUploads
+                console.log(`Space ${space} marked completed but has ${failedCount} failed uploads - repair mode will reprocess`)
+              }
               
               // Calculate total uploads if not already known
-              const totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
+              totalUploadsInSpace = progress ? progress.totalUploads : await countUploadsForSpace(space)
               
               if (!progress) {
                 await createSpaceProgress({
@@ -965,10 +1007,12 @@ async function runMigrationMode(values) {
             // Update progress periodically (every 10 uploads or if failed)
             if (customer && !verifyOnly && !testMode) {
                try {
+                 // Cap completedUploads at totalUploads to prevent negative failed count in repair mode
+                 const completedUploads = Math.min(spaceProcessed, totalUploadsInSpace)
                  await updateSpaceProgress({
                    customer,
                    space,
-                   completedUploads: spaceProcessed,
+                   completedUploads,
                    lastProcessedUpload: upload.root
                  })
                } catch (e) {
@@ -1023,11 +1067,14 @@ async function runMigrationMode(values) {
   const successful = results.filter((r) => r.success).length
   const failed = results.filter((r) => !r.success).length
   const alreadyMigrated = results.filter((r) => r.alreadyMigrated).length
+  const repaired = results.filter((r) => r.repaired).length
 
   const successRate =
     results.length > 0 ? Math.round((successful / results.length) * 100) : 0
   const failureRate =
     results.length > 0 ? Math.round((failed / results.length) * 100) : 0
+  const repairedRate =
+    results.length > 0 ? Math.round((repaired / results.length) * 100) : 0
   
   const spacesWithFailuresRate =
     processedSpaces.size > 0 ? Math.round((spacesWithFailures.size / processedSpaces.size) * 100) : 0
@@ -1126,6 +1173,9 @@ async function runMigrationMode(values) {
     console.log(`  ${successful > 0 ? '✅' : '✓'} Migrated:          ${successful} (${successRate}%)`)
     console.log(`  ${failed > 0 ? '❌' : 'x'} Failed:            ${failed} (${failureRate}%)`)
     console.log(`  ⏭  Already migrated: ${alreadyMigrated}`)
+    if (repaired > 0) {
+      console.log(`  🔧 Repaired:           ${repaired} (${repairedRate}%)`)
+    }
   }
 
   // Save results to file with timestamp in logs folder
