@@ -163,11 +163,12 @@ async function resolveTargetSpaces({ space, customer, customers }) {
  * @param {object} options - Migration options
  * @param {string} [options.testMode] - Test mode: 'index' | 'location-claims' | 'gateway-auth' | null (null = full migration)
  * @param {boolean} [options.verifyOnly] - If true, only verify migration status without making changes (also tests gateway retrieval)
+ * @param {boolean} [options.repair] - If true, force republish location claims for uploads with INDEXING_SERVICE_500 errors
  * @param {number} [options.uploadNumber] - Current upload number (for logging)
  * @param {number} [options.totalUploads] - Total uploads being processed (for logging)
  */
 async function migrateUpload(upload, options = {}) {
-  const { uploadNumber, totalUploads, verifyOnly = false } = options
+  const { uploadNumber, totalUploads, verifyOnly = false, repair = false } = options
 
   // Add spacing before each upload
   if (uploadNumber && uploadNumber > 1) {
@@ -291,23 +292,46 @@ async function migrateUpload(upload, options = {}) {
     console.log(`\nSTEP 1: Analyze Migration Status ${'─'.repeat(35)}`)
     
     let status
+    let repairMode = false // Track if we're in repair mode for this upload
     try {
       status = await checkMigrationNeeded(upload)
     } catch (error) {
       // Check if this is an indexing service 500 error
       const err = /** @type {Error & { code?: string }} */ (error)
       if (err.code === 'INDEXING_SERVICE_500') {
-        return {
-          success: false,
-          failureReason: FAILURE_REASON.INDEXING_SERVICE_500,
-          error: err.message,
-          upload: upload.root,
-          space: upload.space,
-          skipped: true,
+        // In repair mode, we force republish location claims to fix corrupted IPNI references
+        if (repair) {
+          console.log(`\n  ⚠️  INDEXING_SERVICE_500 detected - REPAIR MODE ACTIVE`)
+          console.log(`  Will force republish location claims to fix corrupted IPNI references`)
+          console.log(`  Error was: ${err.message.substring(0, 200)}...`)
+          
+          // Create a synthetic status that forces location claims republishing
+          status = {
+            needsIndexGeneration: false, // Skip index generation - we're just repairing claims
+            needsIndexRegistration: false,
+            needsLocationClaims: true, // Force republish
+            needsGatewayAuth: false, // Skip gateway auth - focus on fixing claims
+            hasIndexClaim: true, // Assume index exists (we're repairing, not creating)
+            hasLocationClaim: false, // Claims are NOT retrievable from indexer (that's why we're repairing)
+            locationHasSpace: false, // Force republish
+            shardsNeedingLocationClaims: upload.shards, // ALL shards need republishing
+            indexCID: null,
+          }
+          repairMode = true
+        } else {
+          return {
+            success: false,
+            failureReason: FAILURE_REASON.INDEXING_SERVICE_500,
+            error: err.message,
+            upload: upload.root,
+            space: upload.space,
+            skipped: true,
+          }
         }
+      } else {
+        // Re-throw other errors
+        throw error
       }
-      // Re-throw other errors
-      throw error
     }
 
     console.log(
@@ -558,6 +582,7 @@ async function migrateUpload(upload, options = {}) {
       retrievalAfterAuth,
       verification: verificationResult,
       failureReason,
+      repairMode, // Track if this was a repair operation
       error: verificationResult.success
         ? undefined
         : verificationResult.details,
@@ -667,6 +692,7 @@ async function runMigrationMode(values) {
     const result = await migrateUpload(upload, {
       testMode,
       verifyOnly,
+      repair: values.repair,
     })
 
     // Track the space
@@ -755,6 +781,7 @@ async function runMigrationMode(values) {
             const result = await migrateUpload(upload, {
               testMode,
               verifyOnly,
+              repair: values.repair,
               uploadNumber: processed,
               totalUploads: limit,
             })
@@ -916,6 +943,7 @@ async function runMigrationMode(values) {
             const result = await migrateUpload(upload, {
               testMode,
               verifyOnly,
+              repair: values.repair,
               uploadNumber: processed,
               totalUploads: limit,
             })
@@ -1199,6 +1227,11 @@ async function main() {
       'worker-id': {
         type: 'string',
         description: 'Worker ID (for progress tracking)',
+      },
+      'repair': {
+        type: 'boolean',
+        default: false,
+        description: 'Repair mode: Force republish location claims for uploads with INDEXING_SERVICE_500 errors (fixes corrupted IPNI references)',
       },
     },
   })
