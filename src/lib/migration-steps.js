@@ -503,7 +503,24 @@ export async function republishLocationClaims({
 
         const resourceCheck = await verifyResource(locationURI)
         if (!resourceCheck.exists) {
-          throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found in R2 (${locationURI})`)
+          // Blob not found at constructed URL - try to get existing location from indexing service
+          console.log(`    ⚠️  ${shardCID}: not found at ${locationURI}, checking indexing service...`)
+          const { queryIndexingService } = await import('./indexing-service.js')
+          const indexingData = await queryIndexingService(shardCID)
+          const existingLocationClaim = indexingData.claims.find(c => c.type === 'assert/location')
+          
+          if (existingLocationClaim && existingLocationClaim.location && existingLocationClaim.location.length > 0) {
+            locationURI = existingLocationClaim.location[0]
+            console.log(`    ✓ ${shardCID}: using existing location from indexer: ${locationURI}`)
+            
+            // Verify the existing location is accessible
+            const existingResourceCheck = await verifyResource(locationURI)
+            if (!existingResourceCheck.exists) {
+              throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found at existing location (${locationURI})`)
+            }
+          } else {
+            throw new Error(`Invalid shard ${shardCID}: [${protocol}] resource not found in R2 (${locationURI}) and no existing location claim found`)
+          }
         }
       }
 
