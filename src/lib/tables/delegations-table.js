@@ -4,7 +4,7 @@
  * Stores delegations in DynamoDB for indexing and S3/R2 for content.
  * Simplified version for migration - only supports putMany for now.
  */
-import { BatchWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
+import { BatchWriteCommand, QueryCommand, DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb'
 import { PutObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { base32 } from 'multiformats/bases/base32'
 import { delegationsToBytes, bytesToDelegations } from '@storacha/access/encoding'
@@ -64,6 +64,50 @@ function getR2Client() {
     })
   }
   return cachedR2Client
+}
+
+/**
+ * Get a delegation from DynamoDB index
+ * 
+ * @param {object} params
+ * @param {import('multiformats').UnknownLink} params.link - Delegation CID
+ * @returns {Promise<object|null>} - Delegation item or null if not found
+ */
+export async function getDelegation({ link }) {
+  const dynamoClient = getDynamoClient()
+  const tableName = process.env.DELEGATIONS_TABLE_NAME || 
+    (config.environment === 'production' ? 'prod-w3infra-delegation' : 'staging-w3infra-delegation')
+  
+  const { GetCommand } = await import('@aws-sdk/lib-dynamodb')
+  const result = await dynamoClient.send(new GetCommand({
+    TableName: tableName,
+    Key: {
+      link: link.toString()
+    }
+  }))
+  
+  return result.Item || null
+}
+
+/**
+ * Remove a delegation from DynamoDB index
+ * Note: This only removes the index entry, not the CAR file from R2 (for audit trail)
+ * 
+ * @param {object} params
+ * @param {import('multiformats').UnknownLink} params.link - Delegation CID
+ * @returns {Promise<void>}
+ */
+export async function removeDelegation({ link }) {
+  const dynamoClient = getDynamoClient()
+  const tableName = process.env.DELEGATIONS_TABLE_NAME || 
+    (config.environment === 'production' ? 'prod-w3infra-delegation' : 'staging-w3infra-delegation')
+  
+  await dynamoClient.send(new DeleteCommand({
+    TableName: tableName,
+    Key: {
+      link: link.toString()
+    }
+  }))
 }
 
 /**
