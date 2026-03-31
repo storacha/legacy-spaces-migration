@@ -3,6 +3,7 @@ dotenv.config()
 import { DID } from '@ucanto/core'
 import { Absentee } from '@ucanto/principal'
 import { UCAN } from '@storacha/capabilities'
+import * as DIDMailto from '@storacha/did-mailto'
 import { delegate } from '@ucanto/core'
 import { SpaceAccess } from '@storacha/access'
 import * as readline from 'readline'
@@ -17,6 +18,35 @@ const rl = readline.createInterface({
 
 const question = (query) => new Promise((resolve) => rl.question(query, resolve))
 
+/**
+ * Parse email or DID to a valid did:mailto: DID
+ * @param {string} input - Email address or did:mailto: DID
+ * @returns {string} Valid did:mailto: DID
+ */
+function parseEmailOrDID(input) {
+  const trimmed = input.trim()
+  
+  // If it's already a did:mailto: DID, validate and return
+  if (trimmed.startsWith('did:mailto:')) {
+    try {
+      return DIDMailto.fromString(trimmed)
+    } catch (err) {
+      throw new Error(`Invalid did:mailto: DID: ${err.message}`)
+    }
+  }
+  
+  // If it looks like an email, convert to DID
+  if (trimmed.includes('@')) {
+    try {
+      return DIDMailto.fromEmail(trimmed)
+    } catch (err) {
+      throw new Error(`Invalid email address: ${err.message}`)
+    }
+  }
+  
+  throw new Error('Input must be either an email address or a did:mailto: DID')
+}
+
 async function main() {
   console.log('--- Space Ownership Transfer Tool ---\n')
   
@@ -26,16 +56,35 @@ async function main() {
   const { updateSpaceProvisioning } = await import('../src/lib/tables/consumer-table.js')
 
   const spaceDID = (await question('Enter Space DID (did:key:...): ')).trim()
-  const inputFromDID = (await question('Enter Current Owner DID (did:mailto:...): ')).trim()
-  const toDID = (await question('Enter New Owner DID (did:mailto:...): ')).trim()
-
-  if (!spaceDID || !inputFromDID || !toDID) {
-    console.error('Error: All DIDs are required.')
+  const fromInput = (await question('Enter Current Owner (email or did:mailto:...): ')).trim()
+  const toInput = (await question('Enter New Owner (email or did:mailto:...): ')).trim()
+  if (!spaceDID || !fromInput || !toInput) {
+    console.error('Error: All fields are required.')
     rl.close()
     process.exit(1)
   }
 
-  console.log('\nLooking up current owner (delegation)...')
+  // Parse and validate inputs
+  let inputFromDID, toDID
+  try {
+    inputFromDID = parseEmailOrDID(fromInput)
+    console.log(`✓ Current Owner DID: ${inputFromDID}`)
+  } catch (err) {
+    console.error(`✗ Current Owner Error: ${err.message}`)
+    rl.close()
+    process.exit(1)
+  }
+
+  try {
+    toDID = parseEmailOrDID(toInput)
+    console.log(`✓ New Owner DID: ${toDID}`)
+  } catch (err) {
+    console.error(`✗ New Owner Error: ${err.message}`)
+    rl.close()
+    process.exit(1)
+  }
+
+  console.log(`\nLooking up current owner delegation (${inputFromDID})...`)
   const spaceDelegation = await findDelegationByIssuer(spaceDID)
   if (!spaceDelegation) {
     throw new Error(`No delegation found for space ${spaceDID}`)
@@ -169,4 +218,7 @@ async function main() {
   console.log('-----------------------------------------------------------')
 }
 
-main().catch(console.error)
+main().catch((e) => {
+  console.error(e)
+  process.exit(1)
+})
